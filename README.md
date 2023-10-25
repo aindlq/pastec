@@ -88,14 +88,14 @@ Here is a detailed list of the API calls:
 This call allows to add the signature of an image in the index to make it available for searching. You need to provide the compressed binary data of the image and an id to identify it.
 
 *   **Path:** /index/images/<image id>
-*   **HTTP method:** PUT
+*   **HTTP method:** POST
 *   **Data:** the binary data of the image to add compressed in JPEG **or** a JSON containing the URL of the image in the "url" field.
 *   **Answer type:** "IMAGE_ADDED"
 *   **Possible error types:** "IMAGE_NOT_DECODED", "IMAGE_SIZE_TOO_BIG", "IMAGE_SIZE_TOO_SMALL", "IMAGE_DOWNLOADER_HTTP_ERROR" with the HTTP status code in the "image_downloader_http_response_code" field.
 *   **Example:**
     *   Command line with image data:
 
-        <pre data-language="shell">curl -X PUT --data-binary @/home/test/img/1.jpg http://localhost:4212/index/images/23
+        <pre data-language="shell">curl -X POST --data-binary @/home/test/img/1.jpg http://localhost:4212/index/images/23
         </pre>
 
     *   Answer:
@@ -108,7 +108,7 @@ This call allows to add the signature of an image in the index to make it availa
 
     *   Command line with an image URL:
 
-        <pre data-language="shell">curl -X PUT -d '{"url":"http://www.mydomain.com/path/to/my/image.jpg"}' http://localhost:4212/index/images/26
+        <pre data-language="shell">curl -X POST -d '{"url":"http://www.mydomain.com/path/to/my/image.jpg"}' http://localhost:4212/index/images/26
         </pre>
 
     *   Answer:
