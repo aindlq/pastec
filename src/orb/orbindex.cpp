@@ -118,6 +118,8 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
         pthread_rwlock_wrlock(&rwLock);
     }
 
+    cout << "Adding Image ID: " << i_imageId << ", Number of hits: " << hitList.size() << endl;
+
     for (list<HitForward>::iterator it = hitList.begin(); it != hitList.end(); ++it)
     {
         HitForward hitFor = *it;
@@ -128,11 +130,15 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
         hitBack.x = hitFor.x;
         hitBack.y = hitFor.y;
 
+        cout << "Hit: Word ID: " << hitFor.i_wordId << ", Angle: " << hitFor.i_angle 
+             << ", X: " << hitFor.x << ", Y: " << hitFor.y << endl;
+
         if (buildForwardIndex)
         {
             forwardIndex[hitFor.i_imageId].push_back(hitFor.i_wordId);
         }
         indexHits[hitFor.i_wordId].push_back(hitBack);
+
         nbWords[hitFor.i_imageId]++;
         nbOccurences[hitFor.i_wordId]++;
         totalNbRecords++;
@@ -142,6 +148,8 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
     if (!hitList.empty())
         cout << "Image " << hitList.begin()->i_imageId << " added: "
              << hitList.size() << " hits." << endl;
+
+
 
     return IMAGE_ADDED;
 }

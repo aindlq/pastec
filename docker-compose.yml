@@ -1,17 +1,11 @@
-
 version: '3.7'
 services:
   pastec:
     build:
       context: .
-      dockerfile: Dockerfile
     ports:
       - '4212:4212'
     restart: always
-    volumes:
-      - ./../pastec-index:/pastec/build/pastec-index:rw
-    command:
-      - /bin/sh 
-      - -c
-      - |
-        ./pastec -p 4212 -i /pastec/build/pastec-index/pharos.dat /pastec/data/visualWordsORB.dat
+    #volumes:
+    #  - ./pastec-index:/pastec/data:rw  # Ensures data directory is correctly mapped for index files
+    command: /bin/sh -c "cd /pastec/build && ./pastec -p 4212 /pastec/data/visualWordsORB.dat"

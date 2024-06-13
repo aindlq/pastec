@@ -52,6 +52,25 @@ u_int32_t ORBFeatureExtractor::processNewImage(unsigned i_imageId, unsigned i_im
     orb->detectAndCompute(img, noArray(), keypoints, descriptors);
     i_nbFeaturesExtracted = keypoints.size();
 
+    std::cout << "Total Keypoints Detected: " << keypoints.size() << std::endl;
+    std::cout << "Descriptors Shape: Rows = " << descriptors.rows << ", Cols = " << descriptors.cols << std::endl;
+
+    for (size_t i = 0; i < keypoints.size(); ++i)
+    {
+        const KeyPoint& kp = keypoints[i];
+        std::cout << "Keypoint " << i << ": X = " << kp.pt.x << ", Y = " << kp.pt.y 
+                  << ", Angle = " << kp.angle << ", Size = " << kp.size << std::endl;
+
+        if (i < descriptors.rows) {
+            const Mat descRow = descriptors.row(i);
+            std::cout << "Descriptor " << i << ": [";
+            for (int j = 0; j < descRow.cols; j++) {
+                std::cout << static_cast<int>(descRow.at<uchar>(0, j)) << (j == descRow.cols - 1 ? "" : ",");
+            }
+            std::cout << "]" << std::endl;
+        }
+    }
+    
     unsigned i_nbKeyPoints = 0;
     list<HitForward> imageHits;
     unordered_set<u_int32_t> matchedWords;
@@ -94,6 +113,7 @@ u_int32_t ORBFeatureExtractor::processNewImage(unsigned i_imageId, unsigned i_im
     imshow("Keypoints 1", img_res);
     waitKey();
 #endif
+
 
     // Record the hits.
     return index->addImage(i_imageId, imageHits);
