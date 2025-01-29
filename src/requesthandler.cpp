@@ -201,10 +201,9 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         ret["type"] = Converter::codeToString(i_ret);
     }
     else if (testURIWithPattern(parsedURI, p_searchImage)
-             && conInfo.connectionType == POST)
+            && conInfo.connectionType == POST)
     {
         SearchRequest req;
-
         req.imageData = conInfo.uploadedData;
         req.client = NULL;
         u_int32_t i_ret = imageSearcher->searchImage(req);
@@ -213,7 +212,7 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         {
             // Check if the data is an image URL to load
             string dataStr(conInfo.uploadedData.begin(),
-                           conInfo.uploadedData.end());
+                        conInfo.uploadedData.end());
 
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
@@ -227,50 +226,60 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
                     req.imageData = imgData;
                     i_ret = imageSearcher->searchImage(req);
                 }
-                else
+                else {
+                    ret["type"] = Converter::codeToString(i_ret);
                     ret["image_downloader_http_response_code"] = (Json::Int64)HTTPResponseCode;
+                    conInfo.answerString = JsonToString(ret);
+                    return;
+                }
             }
         }
 
         ret["type"] = Converter::codeToString(i_ret);
         if (i_ret == SEARCH_RESULTS)
         {
-            // Return the image ids
-            Json::Value imageIds(Json::arrayValue);
-            for (unsigned i = 0; i < req.results.size(); ++i)
-                imageIds.append(req.results[i]);
-            ret["image_ids"] = imageIds;
+            // Create array of result objects
+            Json::Value results(Json::arrayValue);
+            
+            // Safety check that we have at least one result
+            if (!req.results.empty()) {
+                for (unsigned i = 0; i < req.results.size(); ++i)
+                {
+                    Json::Value resultObj;
+                    resultObj["image_id"] = req.results[i];
+                    
+                    // Add score if available
+                    if (i < req.scores.size()) {
+                        resultObj["score"] = req.scores[i];
+                    }
+                    
+                    // Add tag if available
+                    if (i < req.tags.size()) {
+                        resultObj["tag"] = req.tags[i];
+                    }
+                    
+                    // Add bounding rectangle if available
+                    if (i < req.boundingRects.size()) {
+                        Json::Value rect;
+                        rect["x"] = req.boundingRects[i].x;
+                        rect["y"] = req.boundingRects[i].y; 
+                        rect["width"] = req.boundingRects[i].width;
+                        rect["height"] = req.boundingRects[i].height;
+                        resultObj["bounding_rect"] = rect;
+                    }
 
-            // Return the bounding rects
-            Json::Value boundingRects(Json::arrayValue);
-            for (unsigned i = 0; i < req.boundingRects.size(); ++i)
-            {
-                Rect r = req.boundingRects[i];
-                Json::Value rVal;
-                rVal["x"] = r.x; rVal["y"] = r.y;
-                rVal["width"] = r.width; rVal["height"] = r.height;
-                boundingRects.append(rVal);
+                    results.append(resultObj);
+                }
             }
-            ret["bounding_rects"] = boundingRects;
-
-            // Return the scores
-            Json::Value scores(Json::arrayValue);
-            for (unsigned i = 0; i < req.scores.size(); ++i)
-                scores.append(req.scores[i]);
-            ret["scores"] = scores;
-
-            // Return the tags
-            Json::Value tags(Json::arrayValue);
-            for (unsigned i = 0; i < req.tags.size(); ++i)
-                tags.append(req.tags[i]);
-            ret["tags"] = tags;
+            ret["results"] = results;
         }
     }
+
+    // And this is the updated similar search handler
     else if (testURIWithPattern(parsedURI, p_image)
-        && conInfo.connectionType == GET)
+            && conInfo.connectionType == GET)
     {
         SearchRequest req;
-
         req.imageId = atoi(parsedURI[2].c_str());
         req.client = NULL;
         u_int32_t i_ret = imageSearcher->searchSimilar(req);
@@ -279,35 +288,40 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
 
         if (i_ret == SEARCH_RESULTS)
         {
-            // Return the image ids
-            Json::Value imageIds(Json::arrayValue);
-            for (unsigned i = 0; i < req.results.size(); ++i)
-                imageIds.append(req.results[i]);
-            ret["image_ids"] = imageIds;
+            // Create array of result objects
+            Json::Value results(Json::arrayValue);
+            
+            // Safety check that we have at least one result
+            if (!req.results.empty()) {
+                for (unsigned i = 0; i < req.results.size(); ++i)
+                {
+                    Json::Value resultObj;
+                    resultObj["image_id"] = req.results[i];
+                    
+                    // Add score if available  
+                    if (i < req.scores.size()) {
+                        resultObj["score"] = req.scores[i];
+                    }
+                    
+                    // Add tag if available
+                    if (i < req.tags.size()) {
+                        resultObj["tag"] = req.tags[i];
+                    }
+                    
+                    // Add bounding rectangle if available
+                    if (i < req.boundingRects.size()) {
+                        Json::Value rect;
+                        rect["x"] = req.boundingRects[i].x;
+                        rect["y"] = req.boundingRects[i].y;
+                        rect["width"] = req.boundingRects[i].width;
+                        rect["height"] = req.boundingRects[i].height;
+                        resultObj["bounding_rect"] = rect;
+                    }
 
-            // Return the bounding rects
-            Json::Value boundingRects(Json::arrayValue);
-            for (unsigned i = 0; i < req.boundingRects.size(); ++i)
-            {
-                Rect r = req.boundingRects[i];
-                Json::Value rVal;
-                rVal["x"] = r.x; rVal["y"] = r.y;
-                rVal["width"] = r.width; rVal["height"] = r.height;
-                boundingRects.append(rVal);
+                    results.append(resultObj);
+                }
             }
-            ret["bounding_rects"] = boundingRects;
-
-            // Return the scores
-            Json::Value scores(Json::arrayValue);
-            for (unsigned i = 0; i < req.scores.size(); ++i)
-                scores.append(req.scores[i]);
-            ret["scores"] = scores;
-
-            // Return the tags
-            Json::Value tags(Json::arrayValue);
-            for (unsigned i = 0; i < req.tags.size(); ++i)
-                tags.append(req.tags[i]);
-            ret["tags"] = tags;
+            ret["results"] = results;
         }
     }
     else if (testURIWithPattern(parsedURI, p_ioIndex)
