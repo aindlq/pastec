@@ -38,6 +38,11 @@ struct SearchResult
     {
         return f_weight < res.f_weight;
     }
+    
+    bool operator> (const SearchResult &res) const
+    {
+        return f_weight > res.f_weight;
+    }
 
     float f_weight;
     unsigned i_imageId;

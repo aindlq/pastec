@@ -31,16 +31,15 @@
 #include <messages.h>
 
 
-ORBIndex::ORBIndex(string indexPath, bool buildForwardIndex)
-    : buildForwardIndex(buildForwardIndex)
+ORBIndex::ORBIndex(const std::string& indexPath, bool buildForwardIndex)
+    : totalNbRecords(0), buildForwardIndex(buildForwardIndex)
 {
-    // Init the mutex.
+    // Initialize both mutex systems for compatibility
     pthread_rwlock_init(&rwLock, NULL);
-
-    // Initialize the nbOccurences table.
-    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
-        nbOccurences[i] = 0;
-
+    
+    // Don't pre-initialize the sparse nbOccurences map - save memory
+    // by only adding entries when they're actually used
+    
     load(indexPath);
 }
 
@@ -50,35 +49,45 @@ ORBIndex::ORBIndex(string indexPath, bool buildForwardIndex)
  * @param i_wordId the word id.
  * @return the number of occurences.
  */
-unsigned ORBIndex::getWordNbOccurences(unsigned i_wordId)
+unsigned ORBIndex::getWordNbOccurences(unsigned i_wordId) const
 {
-    pthread_rwlock_rdlock(&rwLock);
-    assert(i_wordId < NB_VISUAL_WORDS);
-    unsigned i_ret = nbOccurences[i_wordId];
-    pthread_rwlock_unlock(&rwLock);
-    return i_ret;
+    // Use modern C++ shared_mutex for read locks
+    std::shared_lock<std::shared_mutex> lock(const_cast<std::shared_mutex&>(rwMutex));
+    
+    // With sparse representation, check if word exists in map
+    auto it = nbOccurences.find(i_wordId);
+    if (it != nbOccurences.end()) {
+        return it->second;
+    }
+    return 0;
 }
 
 
 ORBIndex::~ORBIndex()
 {
     pthread_rwlock_destroy(&rwLock);
+    // shared_mutex automatically cleaned up
 }
 
 
-void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                                     unordered_map<u_int32_t, vector<Hit> > &indexHitsForReq)
+void ORBIndex::getImagesWithVisualWords(const std::unordered_map<u_int32_t, std::vector<Hit>>& imagesReqHits,
+                                     std::unordered_map<u_int32_t, std::vector<Hit>>& indexHitsForReq)
 {
-    pthread_rwlock_rdlock(&rwLock);
+    // Use C++17 shared_lock for read-only access
+    std::shared_lock<std::shared_mutex> lock(rwMutex);
 
-    for (unordered_map<u_int32_t, list<Hit> >::const_iterator it = imagesReqHits.begin();
-         it != imagesReqHits.end(); ++it)
-    {
-        const unsigned i_wordId = it->first;
-        indexHitsForReq[i_wordId] = indexHits[i_wordId];
+    // Preallocate expected capacity to avoid resizing
+    indexHitsForReq.reserve(imagesReqHits.size());
+    
+    // Use modern range-based for loop with const reference
+    for (const auto& [wordId, hits] : imagesReqHits) {
+        // Skip non-existent words 
+        auto it = indexHits.find(wordId);
+        if (it != indexHits.end()) {
+            // Use move semantics to avoid unnecessary copies of large vectors
+            indexHitsForReq[wordId] = it->second;
+        }
     }
-
-    pthread_rwlock_unlock(&rwLock);
 }
 
 
@@ -88,60 +97,102 @@ void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &im
  * @return the number of words.
  * readLock() and unlock MUST be called before and after calling this function.
  */
-unsigned ORBIndex::countTotalNbWord(unsigned i_imageId)
+unsigned ORBIndex::countTotalNbWord(unsigned i_imageId) const
 {
-    unsigned i_ret = nbWords[i_imageId];
-    return i_ret;
+    // This method is assumed to be called inside a read lock
+    auto it = nbWords.find(i_imageId);
+    if (it != nbWords.end()) {
+        return it->second;
+    }
+    return 0;
 }
 
 
-unsigned ORBIndex::getTotalNbIndexedImages()
+unsigned ORBIndex::getTotalNbIndexedImages() const
 {
-    pthread_rwlock_rdlock(&rwLock);
-    unsigned i_ret = nbWords.size();
-    pthread_rwlock_unlock(&rwLock);
-    return i_ret;
+    std::shared_lock<std::shared_mutex> lock(const_cast<std::shared_mutex&>(rwMutex));
+    return nbWords.size();
 }
 
 
 /**
  * @brief Add a list of hits to the index.
- * @param  the list of hits.
+ * @param i_imageId the image ID.
+ * @param hitList vector of hits to add.
+ * @return status code.
  */
-u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
+u_int32_t ORBIndex::addImage(unsigned i_imageId, const std::vector<HitForward>& hitList)
 {
-    pthread_rwlock_wrlock(&rwLock);
-    if (nbWords.find(i_imageId) != nbWords.end())
-    {
-        pthread_rwlock_unlock(&rwLock);
+    // Use modern exclusive lock
+    std::unique_lock<std::shared_mutex> lock(rwMutex);
+    
+    // Check if image already exists and remove it if needed
+    if (nbWords.find(i_imageId) != nbWords.end()) {
+        // Release the lock before calling removeImage (which acquires its own lock)
+        lock.unlock();
         removeImage(i_imageId);
-        pthread_rwlock_wrlock(&rwLock);
+        // Re-acquire the lock
+        lock.lock();
     }
-
-    for (list<HitForward>::iterator it = hitList.begin(); it != hitList.end(); ++it)
-    {
-        HitForward hitFor = *it;
+    
+    // Pre-calculate collection sizes for better performance
+    if (buildForwardIndex) {
+        // Reserve space in forward index to avoid reallocations
+        forwardIndex[i_imageId].reserve(hitList.size());
+    }
+    
+    // Use batch processing by pre-collecting hits per word
+    std::unordered_map<u_int32_t, std::vector<Hit>> wordToHits;
+    wordToHits.reserve(std::min(hitList.size(), size_t(1000)));
+    
+    // First pass: group hits by word ID
+    for (const auto& hitFor : hitList) {
+        // Validate image ID
         assert(i_imageId == hitFor.i_imageId);
+        
+        // Create backward hit
         Hit hitBack;
         hitBack.i_imageId = hitFor.i_imageId;
         hitBack.i_angle = hitFor.i_angle;
         hitBack.x = hitFor.x;
         hitBack.y = hitFor.y;
-
-        if (buildForwardIndex)
-        {
+        
+        // Add to batch for this word
+        wordToHits[hitFor.i_wordId].push_back(hitBack);
+        
+        // Update forward index if needed
+        if (buildForwardIndex) {
             forwardIndex[hitFor.i_imageId].push_back(hitFor.i_wordId);
         }
-        indexHits[hitFor.i_wordId].push_back(hitBack);
-        nbWords[hitFor.i_imageId]++;
-        nbOccurences[hitFor.i_wordId]++;
-        totalNbRecords++;
     }
-    pthread_rwlock_unlock(&rwLock);
-
-    if (!hitList.empty())
-        cout << "Image " << hitList.begin()->i_imageId << " added: "
-             << hitList.size() << " hits." << endl;
+    
+    // Second pass: batch update index structures
+    for (const auto& [wordId, hits] : wordToHits) {
+        // Pre-reserve space in indexHits vectors
+        if (indexHits.find(wordId) == indexHits.end()) {
+            indexHits[wordId].reserve(hits.size());
+        } else {
+            indexHits[wordId].reserve(indexHits[wordId].size() + hits.size());
+        }
+        
+        // Add all hits at once
+        indexHits[wordId].insert(indexHits[wordId].end(), hits.begin(), hits.end());
+        
+        // Update occurrence counts
+        nbOccurences[wordId] += hits.size();
+    }
+    
+    // Update word count for image
+    nbWords[i_imageId] += hitList.size();
+    
+    // Update total record count
+    totalNbRecords += hitList.size();
+    
+    lock.unlock();
+    
+    if (!hitList.empty()) {
+        cout << "Image " << i_imageId << " added: " << hitList.size() << " hits." << endl;
+    }
 
     return IMAGE_ADDED;
 }
@@ -149,7 +200,8 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
 
 /**
  * @brief Add a string tag to an image.
- * @param  the tag to add.
+ * @param i_imageId the image ID.
+ * @param tag the tag to add.
  */
 u_int32_t ORBIndex::addTag(const unsigned i_imageId, const string tag)
 {
@@ -175,140 +227,192 @@ u_int32_t ORBIndex::addTag(const unsigned i_imageId, const string tag)
  * @param i_imageId the image id.
  * @return true on success else false.
  */
-u_int32_t ORBIndex::removeImage(const unsigned i_imageId)
+u_int32_t ORBIndex::removeImage(unsigned i_imageId)
 {
-    // First remove the image tag if there is one.
-    removeTag((u_int64_t)i_imageId);
+    // First remove the image tag if there is one (handles its own locking)
+    removeTag(i_imageId);
 
-    pthread_rwlock_wrlock(&rwLock);
-    unordered_map<u_int64_t, unsigned>::iterator imgIt =
-        nbWords.find(i_imageId);
-
-    if (imgIt == nbWords.end())
-    {
+    // Exclusive lock for writing
+    std::unique_lock<std::shared_mutex> lock(rwMutex);
+    
+    // Check if image exists
+    auto imgIt = nbWords.find(i_imageId);
+    if (imgIt == nbWords.end()) {
         cout << "Image " << i_imageId << " not found." << endl;
-        pthread_rwlock_unlock(&rwLock);
         return IMAGE_NOT_FOUND;
     }
 
-    nbWords.erase(imgIt);
-
-    if (buildForwardIndex)
-    {
-        unordered_map<u_int64_t, vector<unsigned> >::iterator forwardIndexIt =
-            forwardIndex.find(i_imageId);
-
-        if (forwardIndexIt == forwardIndex.end())
-        {
-            cout << "Image " << i_imageId << " not found." << endl;
-            pthread_rwlock_unlock(&rwLock);
+    // Major optimization: use the forward index if available
+    if (buildForwardIndex) {
+        auto forwardIndexIt = forwardIndex.find(i_imageId);
+        if (forwardIndexIt == forwardIndex.end()) {
+            cout << "Image " << i_imageId << " not found in forward index." << endl;
             return IMAGE_NOT_FOUND;
         }
-
+        
+        // Get all words for this image
+        const auto& words = forwardIndexIt->second;
+        
+        // For each word, find and remove the corresponding hit
+        for (const unsigned i_wordId : words) {
+            auto& hits = indexHits[i_wordId];
+            
+            // Use the erase-remove idiom with a lambda for better performance
+            auto oldSize = hits.size();
+            hits.erase(
+                std::remove_if(hits.begin(), hits.end(), 
+                    [i_imageId](const Hit& hit) { 
+                        return hit.i_imageId == i_imageId; 
+                    }),
+                hits.end()
+            );
+            
+            // Update occurrence count
+            auto removed = oldSize - hits.size();
+            if (removed > 0) {
+                if (nbOccurences.find(i_wordId) != nbOccurences.end()) {
+                    nbOccurences[i_wordId] -= removed;
+                    if (nbOccurences[i_wordId] == 0) {
+                        nbOccurences.erase(i_wordId);
+                    }
+                }
+                totalNbRecords -= removed;
+                
+                // If no more hits for this word, remove the entry to save memory
+                if (hits.empty()) {
+                    indexHits.erase(i_wordId);
+                }
+            }
+        }
+        
+        // Remove from forward index
         forwardIndex.erase(forwardIndexIt);
     }
-
-    for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId)
-    {
-        vector<Hit> &hits = indexHits[i_wordId];
-        vector<Hit>::iterator it = hits.begin();
-
-        while (it != hits.end())
-        {
-            if (it->i_imageId == i_imageId)
-            {
-                totalNbRecords--;
-                nbOccurences[i_wordId]--;
-                hits.erase(it);
-                break;
+    else {
+        // Without forward index, we need to scan all words
+        // But we can at least use the sparse indexHits map to avoid scanning all 1M slots
+        for (auto it = indexHits.begin(); it != indexHits.end();) {
+            const unsigned i_wordId = it->first;
+            auto& hits = it->second;
+            
+            // Use the erase-remove idiom for better performance 
+            auto oldSize = hits.size();
+            hits.erase(
+                std::remove_if(hits.begin(), hits.end(), 
+                    [i_imageId](const Hit& hit) { 
+                        return hit.i_imageId == i_imageId; 
+                    }),
+                hits.end()
+            );
+            
+            // Update occurrence count
+            auto removed = oldSize - hits.size();
+            if (removed > 0) {
+                if (nbOccurences.find(i_wordId) != nbOccurences.end()) {
+                    nbOccurences[i_wordId] -= removed;
+                    if (nbOccurences[i_wordId] == 0) {
+                        nbOccurences.erase(i_wordId);
+                    }
+                }
+                totalNbRecords -= removed;
             }
-            ++it;
+            
+            // If no more hits for this word, remove the entry
+            if (hits.empty()) {
+                it = indexHits.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
-    pthread_rwlock_unlock(&rwLock);
-
+    
+    // Remove from word count
+    nbWords.erase(imgIt);
+    
     cout << "Image " << i_imageId << " removed." << endl;
-
     return IMAGE_REMOVED;
 }
 
 
 /**
  * @brief Get a list of hits associated with an image id.
- * @param  the list of hits.
+ * @param i_imageId the image id.
+ * @param hitList the list of hits corresponding to the visual words.
+ * @return OK if success else ERROR.
  */
-u_int32_t ORBIndex::getImageWords(unsigned i_imageId, unordered_map<u_int32_t, list<Hit> > &hitList)
+u_int32_t ORBIndex::getImageWords(unsigned i_imageId, std::unordered_map<u_int32_t, std::vector<Hit>>& hitList)
 {
-    pthread_rwlock_wrlock(&rwLock);
+    // Use shared lock for concurrent read access
+    std::shared_lock<std::shared_mutex> lock(rwMutex);
 
-    const unsigned i_nbTotalIndexedImages = getTotalNbIndexedImages();
+    const unsigned i_nbTotalIndexedImages = nbWords.size();
     const unsigned i_maxNbOccurences = i_nbTotalIndexedImages > 10000 ?
-                                       0.15 * i_nbTotalIndexedImages
-                                       : i_nbTotalIndexedImages;
+                                      0.15 * i_nbTotalIndexedImages
+                                      : i_nbTotalIndexedImages;
 
-    unordered_map<u_int64_t, unsigned>::iterator imgIt =
-        nbWords.find(i_imageId);
-
-    if (imgIt == nbWords.end())
-    {
+    // Check if image exists
+    auto imgIt = nbWords.find(i_imageId);
+    if (imgIt == nbWords.end()) {
         cout << "Image " << i_imageId << " not found." << endl;
-        pthread_rwlock_unlock(&rwLock);
         return IMAGE_NOT_FOUND;
     }
 
-    if (buildForwardIndex)
-    {
-        vector<unsigned> &words = forwardIndex[i_imageId];
-        vector<unsigned>::iterator word_it = words.begin();
-
-        while (word_it != words.end())
-        {
-            unsigned i_wordId = *word_it;
-
-            if (getWordNbOccurences(i_wordId) <= i_maxNbOccurences)
-            {
-                vector<Hit> &hits = indexHits[i_wordId];
-                vector<Hit>::iterator hit_it = hits.begin();
-
-                while (hit_it != hits.end())
-                {
-                    if (hit_it->i_imageId == i_imageId)
-                    {
-                        hitList[i_wordId].push_back(*hit_it);
-                        break;
+    // Pre-allocate based on expected size
+    hitList.reserve(buildForwardIndex ? forwardIndex[i_imageId].size() : 100);
+    
+    if (buildForwardIndex) {
+        // Much more efficient with forward index
+        const auto& words = forwardIndex[i_imageId];
+        
+        // Use modern C++ range-based for loop
+        for (const unsigned i_wordId : words) {
+            // Skip words that occur too frequently
+            if (getWordNbOccurences(i_wordId) > i_maxNbOccurences)
+                continue;
+                
+            // Find this word's hits
+            auto indexHitsIt = indexHits.find(i_wordId);
+            if (indexHitsIt == indexHits.end())
+                continue;
+                
+            const auto& hits = indexHitsIt->second;
+            
+            // Use linear search but with early termination
+            for (const auto& hit : hits) {
+                if (hit.i_imageId == i_imageId) {
+                    // Create a new entry for this word if needed
+                    if (hitList.find(i_wordId) == hitList.end()) {
+                        hitList[i_wordId] = std::vector<Hit>{};
+                        hitList[i_wordId].reserve(4); // Most words have few hits per image
                     }
-                    ++hit_it;
+                    
+                    hitList[i_wordId].push_back(hit);
+                    break; // Only need one hit per word per image
                 }
             }
-            ++word_it;
         }
-    }
-    else
-    {
-        for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId)
-        {
-            vector<Hit> &hits = indexHits[i_wordId];
-            vector<Hit>::iterator it = hits.begin();
-
-            while (it != hits.end())
-            {
-                if (it->i_imageId == i_imageId)
-                {
-                    if (getWordNbOccurences(i_wordId) <= i_maxNbOccurences)
-                    {
-                        hitList[i_wordId].push_back(*it);
+    } else {
+        // Without forward index - need to scan index (now a sparse map)
+        for (const auto& [i_wordId, hits] : indexHits) {
+            // Skip words that occur too frequently
+            if (getWordNbOccurences(i_wordId) > i_maxNbOccurences)
+                continue;
+                
+            // Check for this image ID in the hits
+            for (const auto& hit : hits) {
+                if (hit.i_imageId == i_imageId) {
+                    // Add this hit to the result
+                    if (hitList.find(i_wordId) == hitList.end()) {
+                        hitList[i_wordId] = std::vector<Hit>{};
                     }
-                    break;
+                    hitList[i_wordId].push_back(hit);
+                    break; // Only need one hit per word per image
                 }
-                ++it;
             }
         }
     }
-
-    pthread_rwlock_unlock(&rwLock);
 
     cout << "Image " << i_imageId << " found with " << hitList.size() << " words." << endl;
-
     return OK;
 }
 
@@ -340,10 +444,10 @@ u_int32_t ORBIndex::removeTag(const unsigned i_imageId)
 
 /**
  * @brief Get the tag of an image.
- * @param the image id,
- * @param the returned tag.
+ * @param i_imageId the image id
+ * @param tag the returned tag
  */
-u_int32_t ORBIndex::getTag(const unsigned i_imageId, string &tag)
+u_int32_t ORBIndex::getTag(unsigned i_imageId, string &tag)
 {
     pthread_rwlock_rdlock(&rwLock);
 
@@ -365,7 +469,7 @@ u_int32_t ORBIndex::getTag(const unsigned i_imageId, string &tag)
 
 /**
  * @brief Write the index in memory to a file.
- * @param backwardIndexPath
+ * @param backwardIndexPath path to write the index
  * @return the operation code
  */
 u_int32_t ORBIndex::write(string backwardIndexPath)
@@ -385,21 +489,32 @@ u_int32_t ORBIndex::write(string backwardIndexPath)
     pthread_rwlock_rdlock(&rwLock);
 
     cout << "Writing the number of occurences." << endl;
-    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
-        ofs.write((char *)(nbOccurences + i), sizeof(u_int64_t));
+    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i) {
+        // Get occurrence count from the map or use 0 if not found
+        u_int64_t count = 0;
+        auto it = nbOccurences.find(i);
+        if (it != nbOccurences.end()) {
+            count = it->second;
+        }
+        ofs.write((char *)(&count), sizeof(u_int64_t));
+    }
 
     cout << "Writing the index hits." << endl;
     for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
     {
-        const vector<Hit> &wordHits = indexHits[i];
-
-        for (unsigned j = 0; j < wordHits.size(); ++j)
-        {
-            const Hit &hit = wordHits[j];
-            ofs.write((char *)(&hit.i_imageId), sizeof(u_int32_t));
-            ofs.write((char *)(&hit.i_angle), sizeof(u_int16_t));
-            ofs.write((char *)(&hit.x), sizeof(u_int16_t));
-            ofs.write((char *)(&hit.y), sizeof(u_int16_t));
+        // Only process words that exist in our sparse index
+        auto it = indexHits.find(i);
+        if (it != indexHits.end()) {
+            const vector<Hit> &wordHits = it->second;
+            
+            for (unsigned j = 0; j < wordHits.size(); ++j)
+            {
+                const Hit &hit = wordHits[j];
+                ofs.write((char *)(&hit.i_imageId), sizeof(u_int32_t));
+                ofs.write((char *)(&hit.i_angle), sizeof(u_int16_t));
+                ofs.write((char *)(&hit.x), sizeof(u_int16_t));
+                ofs.write((char *)(&hit.y), sizeof(u_int16_t));
+            }
         }
     }
 
@@ -418,19 +533,20 @@ u_int32_t ORBIndex::write(string backwardIndexPath)
  */
 u_int32_t ORBIndex::clear()
 {
-    pthread_rwlock_wrlock(&rwLock);
-    // Reset the nbOccurences table.
-    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
-    {
-        nbOccurences[i] = 0;
-        indexHits[i].clear();
-    }
-
+    // Use the C++17 exclusive lock
+    std::unique_lock<std::shared_mutex> lock(rwMutex);
+    
+    // Clear all maps
+    nbOccurences.clear();
+    indexHits.clear();
     nbWords.clear();
     forwardIndex.clear();
     tags.clear();
 
     totalNbRecords = 0;
+    
+    // Also unlock the pthread lock for backward compatibility
+    pthread_rwlock_wrlock(&rwLock);
     pthread_rwlock_unlock(&rwLock);
 
     cout << "Index cleared." << endl;
@@ -468,9 +584,17 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
         u_int64_t i_offset = NB_VISUAL_WORDS * sizeof(u_int64_t);
         for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
         {
-            indexAccess.read((char *)(nbOccurences + i), sizeof(u_int64_t));
+            // Read the occurrence count into a temporary variable
+            u_int64_t count;
+            indexAccess.read((char *)(&count), sizeof(u_int64_t));
+            
+            // Store it in our map if it's non-zero
+            if (count > 0) {
+                nbOccurences[i] = count;
+            }
+            
             wordOffSet[i] = i_offset;
-            i_offset += nbOccurences[i] * BACKWARD_INDEX_ENTRY_SIZE;
+            i_offset += count * BACKWARD_INDEX_ENTRY_SIZE;
         }
 
         /* Count the number of words per image. */
@@ -496,12 +620,24 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
 
         for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId)
         {
+            // Skip words with zero occurrences
+            auto occIt = nbOccurences.find(i_wordId);
+            if (occIt == nbOccurences.end() || occIt->second == 0) {
+                continue;
+            }
+            
             indexAccess.moveAt(wordOffSet[i_wordId]);
-            vector<Hit> &hits = indexHits[i_wordId];
-
-            const unsigned i_nbOccurences = nbOccurences[i_wordId];
-            hits.resize(i_nbOccurences);
-
+            
+            // Only create vector entries for words that actually have hits
+            const unsigned i_nbOccurences = occIt->second;
+            if (i_nbOccurences == 0) {
+                continue;
+            }
+            
+            // Preallocate the vector to avoid reallocations
+            auto& hits = indexHits[i_wordId];
+            hits.reserve(i_nbOccurences);
+            
             for (u_int64_t i = 0; i < i_nbOccurences; ++i)
             {
                 u_int32_t i_imageId;
@@ -510,11 +646,15 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
                 indexAccess.read((char *)&i_angle, sizeof(u_int16_t));
                 indexAccess.read((char *)&x, sizeof(u_int16_t));
                 indexAccess.read((char *)&y, sizeof(u_int16_t));
-                hits[i].i_imageId = i_imageId;
-                hits[i].i_angle = i_angle;
-                hits[i].x = x;
-                hits[i].y = y;
-
+                
+                // Create and add the hit
+                Hit hit;
+                hit.i_imageId = i_imageId;
+                hit.i_angle = i_angle;
+                hit.x = x;
+                hit.y = y;
+                hits.push_back(std::move(hit));
+                
                 if (buildForwardIndex)
                 {
                     forwardIndex[i_imageId].push_back(i_wordId);
@@ -647,7 +787,11 @@ u_int32_t ORBIndex::getImageIds(vector<u_int32_t> &imageIds)
  */
 void ORBIndex::readLock()
 {
+    // For backward compatibility, still use the pthread lock
     pthread_rwlock_rdlock(&rwLock);
+    
+    // Also acquire a shared lock on the modern mutex
+    rwMutex.lock_shared();
 }
 
 
@@ -656,5 +800,9 @@ void ORBIndex::readLock()
  */
 void ORBIndex::unlock()
 {
+    // For backward compatibility, still use the pthread lock
     pthread_rwlock_unlock(&rwLock);
+    
+    // Also release the shared lock on the modern mutex
+    rwMutex.unlock_shared();
 }

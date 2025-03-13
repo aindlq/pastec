@@ -53,8 +53,15 @@ u_int32_t ORBFeatureExtractor::processNewImage(unsigned i_imageId, unsigned i_im
     i_nbFeaturesExtracted = keypoints.size();
 
     unsigned i_nbKeyPoints = 0;
-    list<HitForward> imageHits;
+    // Use a vector instead of a list for better performance
+    std::vector<HitForward> imageHits;
+    // Reserve estimated space based on keypoints
+    imageHits.reserve(std::min(keypoints.size(), (size_t)2000));
+    
     unordered_set<u_int32_t> matchedWords;
+    // Reserve space for matched words to avoid rehashing
+    matchedWords.reserve(std::min(keypoints.size(), (size_t)2000));
+    
     for (unsigned i = 0; i < keypoints.size(); ++i)
     {
         i_nbKeyPoints++;
@@ -79,7 +86,7 @@ u_int32_t ORBFeatureExtractor::processNewImage(unsigned i_imageId, unsigned i_im
                 newHit.i_angle = angle;
                 newHit.x = x;
                 newHit.y = y;
-                imageHits.push_back(newHit);
+                imageHits.push_back(std::move(newHit));  // Use move semantics
                 matchedWords.insert(i_wordId);
             }
         }

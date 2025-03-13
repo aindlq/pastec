@@ -24,6 +24,10 @@
 
 #include <fstream>
 #include <string>
+#include <memory>
+#include <atomic>
+#include <shared_mutex> // C++17 shared_mutex for reader/writer lock
+#include <system_error>
 
 #include <sys/types.h>
 
@@ -36,49 +40,63 @@
 #include <backwardindexreaderaccess.h>
 #include <index.h>
 
+// Use of namespace std is kept for backward compatibility
 using namespace std;
 
-
-#define NB_VISUAL_WORDS 1000000
-#define BACKWARD_INDEX_ENTRY_SIZE 10
+constexpr size_t NB_VISUAL_WORDS = 1000000;
+constexpr size_t BACKWARD_INDEX_ENTRY_SIZE = 10;
 
 class ORBIndex : public Index
 {
 public:
-    ORBIndex(string indexPath, bool buildForwardIndex);
+    ORBIndex(const std::string& indexPath, bool buildForwardIndex);
     virtual ~ORBIndex();
-    void getImagesWithVisualWords(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                                  std::unordered_map<u_int32_t, vector<Hit> > &indexHitsForReq);
-    unsigned getWordNbOccurences(unsigned i_wordId);
-    unsigned countTotalNbWord(unsigned i_imageId);
-    unsigned getTotalNbIndexedImages();
-    u_int32_t addImage(unsigned i_imageId, list<HitForward> hitList);
-    u_int32_t addTag(const unsigned i_imageId, const string tag);
-    u_int32_t removeImage(const unsigned i_imageId);
-    u_int32_t getImageWords(const unsigned i_imageId, unordered_map<u_int32_t, list<Hit> > &hitList);
-    u_int32_t removeTag(const unsigned i_imageId);
-    u_int32_t getTag(unsigned i_imageId, string &tag);
-    u_int32_t write(string backwardIndexPath);
-    u_int32_t clear();
-    u_int32_t load(string backwardIndexPath);
-    u_int32_t getImageIds(vector<u_int32_t> &imageIds);
+    
+    // Updated method signatures to match the base class
+    void getImagesWithVisualWords(const std::unordered_map<u_int32_t, std::vector<Hit>>& imagesReqHits,
+                                  std::unordered_map<u_int32_t, std::vector<Hit>>& indexHitsForReq);
+    
+    unsigned getWordNbOccurences(unsigned i_wordId) const;
+    unsigned countTotalNbWord(unsigned i_imageId) const;
+    unsigned getTotalNbIndexedImages() const;
+    
+    u_int32_t addImage(unsigned i_imageId, const std::vector<HitForward>& hitList);
+    u_int32_t addTag(const unsigned i_imageId, const string tag) override;
+    u_int32_t removeImage(const unsigned i_imageId) override;
+    u_int32_t getImageWords(unsigned i_imageId, std::unordered_map<u_int32_t, std::vector<Hit>>& hitList);
+    u_int32_t removeTag(const unsigned i_imageId) override;
+    u_int32_t getTag(unsigned i_imageId, string& tag) override;
+    
+    u_int32_t write(string backwardIndexPath) override;
+    u_int32_t clear() override;
+    u_int32_t load(string backwardIndexPath) override;
+    u_int32_t getImageIds(vector<u_int32_t>& imageIds) override;
 
-    u_int32_t loadTags(string indexTagsPath);
-    u_int32_t writeTags(string indexTagsPath);
+    u_int32_t loadTags(string indexTagsPath) override;
+    u_int32_t writeTags(string indexTagsPath) override;
 
+    // Thread-safe locking using C++17 shared_mutex
     void readLock();
     void unlock();
 
 private:
-    u_int64_t nbOccurences[NB_VISUAL_WORDS];
-    u_int64_t totalNbRecords;
+    // Use a sparse representation for occurrence counts to save memory
+    std::unordered_map<u_int32_t, u_int64_t> nbOccurences;
+    std::atomic<u_int64_t> totalNbRecords;
     bool buildForwardIndex;
 
-    unordered_map<u_int64_t, unsigned> nbWords;
-    unordered_map<u_int64_t, vector<unsigned> > forwardIndex;
-    unordered_map<u_int32_t, string> tags;
-    vector<Hit> indexHits[NB_VISUAL_WORDS];
-
+    // Improved data structures with consistent types
+    std::unordered_map<u_int64_t, unsigned> nbWords;
+    std::unordered_map<u_int64_t, std::vector<unsigned>> forwardIndex;
+    std::unordered_map<u_int32_t, std::string> tags;
+    
+    // More memory-efficient sparse representation of visual words
+    std::unordered_map<u_int32_t, std::vector<Hit>> indexHits;
+    
+    // Modern C++ threading primitives
+    std::shared_mutex rwMutex;
+    
+    // Compatibility layer for older code
     pthread_rwlock_t rwLock;
 };
 

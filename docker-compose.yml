@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - '4212:4212'
+      - '4213:4212'
     restart: always
     volumes:
       - ./../pastec-index:/pastec/build/pastec-index:rw

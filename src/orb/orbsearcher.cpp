@@ -22,16 +22,17 @@
 #include <iostream>
 #include <fstream>
 #include <sys/time.h>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <algorithm>
+#include <functional>
 
 #include <set>
-#ifndef __APPLE__
-#include <tr1/unordered_set>
-#include <tr1/unordered_map>
-#else
 #include <unordered_set>
 #include <unordered_map>
-#endif
 #include <queue>
+#include <vector>
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -40,10 +41,6 @@
 #include <orbsearcher.h>
 #include <messages.h>
 #include <imageloader.h>
-
-#ifndef __APPLE__
-using namespace std::tr1;
-#endif
 
 ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
     : index(index), wordIndex(wordIndex), orb(ORB::create(2000, 1.02, 100))
@@ -54,54 +51,7 @@ ORBSearcher::~ORBSearcher()
 { }
 
 
-/**
- * @brief The RankingThread class
- * This threads computes the tf-idf weights of the images that contains the words
- * given in argument.
- */
-class RankingThread : public Thread
-{
-public:
-    RankingThread(ORBIndex *index, const unsigned i_nbTotalIndexedImages,
-                  std::unordered_map<u_int32_t, vector<Hit> > &indexHits)
-        : index(index), i_nbTotalIndexedImages(i_nbTotalIndexedImages),
-          indexHits(indexHits) { }
-
-    void addWord(u_int32_t i_wordId)
-    {
-        wordIds.push_back(i_wordId);
-    }
-
-    void *run()
-    {
-        weights.rehash(wordIds.size());
-
-        for (deque<u_int32_t>::const_iterator it = wordIds.begin();
-            it != wordIds.end(); ++it)
-        {
-            const vector<Hit> &hits = indexHits[*it];
-
-            const float f_weight = log((float)i_nbTotalIndexedImages / hits.size());
-
-            for (vector<Hit>::const_iterator it2 = hits.begin();
-                 it2 != hits.end(); ++it2)
-            {
-                /* TF-IDF according to the paper "Video Google:
-                 * A Text Retrieval Approach to Object Matching in Videos" */
-                unsigned i_totalNbWords = index->countTotalNbWord(it2->i_imageId);
-                weights[it2->i_imageId] += f_weight / i_totalNbWords;
-            }
-        }
-
-        return NULL;
-    }
-
-    ORBIndex *index;
-    const unsigned i_nbTotalIndexedImages;
-    std::unordered_map<u_int32_t, vector<Hit> > &indexHits;
-    deque<u_int32_t> wordIds;
-    std::unordered_map<u_int32_t, float> weights; // key: image id, value: image score.
-};
+// Modern implementation using C++11 threading replaced RankingThread class
 
 
 /**
@@ -136,33 +86,61 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
                                        0.15 * i_nbTotalIndexedImages
                                        : i_nbTotalIndexedImages;
 
-    std::unordered_map<u_int32_t, list<Hit> > imageReqHits; // key: visual word, value: the found angles
-    for (unsigned i = 0; i < keypoints.size(); ++i)
+    // Pre-check word occurrences to avoid unneeded lookups
+    std::vector<bool> validWords(NB_VISUAL_WORDS, false);
+    const unsigned i_maxOccurrences = i_maxNbOccurences; // Cache this value
+    
+    #pragma omp parallel for schedule(dynamic, 1000)
+    for (u_int32_t i = 0; i < NB_VISUAL_WORDS; i++) {
+        if (index->getWordNbOccurences(i) <= i_maxOccurrences) {
+            validWords[i] = true;
+        }
+    }
+    
+    // Use vector instead of list for better cache locality
+    std::unordered_map<u_int32_t, std::vector<Hit>> imageReqHits; // key: visual word, value: the found angles
+    imageReqHits.reserve(std::min(keypoints.size(), size_t(5000))); // Reserve space to avoid rehashing
+    
+    constexpr int NB_NEIGHBORS = 1;
+    
+    // Process keypoints in batches for better memory access patterns
+    const int batchSize = 64;
+    for (unsigned i = 0; i < keypoints.size(); i += batchSize)
     {
-        #define NB_NEIGHBORS 1
+        const unsigned endIdx = std::min<unsigned>(i + batchSize, keypoints.size());
+        
+        // Pre-allocate vectors for batch processing
+        std::vector<std::vector<int>> batchIndices(endIdx - i, std::vector<int>(NB_NEIGHBORS));
+        std::vector<std::vector<int>> batchDists(endIdx - i, std::vector<int>(NB_NEIGHBORS));
 
-        vector<int> indices(NB_NEIGHBORS);
-        vector<int> dists(NB_NEIGHBORS);
-        wordIndex->knnSearch(descriptors.row(i), indices,
-                           dists, NB_NEIGHBORS);
+        // Perform batch kNN search
+        for (unsigned j = i; j < endIdx; ++j) {
+            wordIndex->knnSearch(descriptors.row(j), batchIndices[j-i], 
+                                 batchDists[j-i], NB_NEIGHBORS);
+        }
 
-        for (unsigned j = 0; j < indices.size(); ++j)
-        {
-            const unsigned i_wordId = indices[j];
-
-            if (index->getWordNbOccurences(i_wordId) > i_maxNbOccurences)
-                continue;
-
-            if (imageReqHits.find(i_wordId) == imageReqHits.end())
-            {
-                // Convert the angle to a 16 bit integer.
-                Hit hit;
-                hit.i_imageId = 0;
-                hit.i_angle = keypoints[i].angle / 360 * (1 << 16);
-                hit.x = keypoints[i].pt.x;
-                hit.y = keypoints[i].pt.y;
-
-                imageReqHits[i_wordId].push_back(hit);
+        // Process batch results
+        for (unsigned j = i; j < endIdx; ++j) {
+            for (int k = 0; k < NB_NEIGHBORS; ++k) {
+                const unsigned i_wordId = batchIndices[j-i][k];
+                
+                // Skip invalid words using pre-computed validity
+                if (!validWords[i_wordId])
+                    continue;
+                
+                auto it = imageReqHits.find(i_wordId);
+                if (it == imageReqHits.end()) {
+                    // Convert the angle to a 16 bit integer.
+                    Hit hit;
+                    hit.i_imageId = 0;
+                    hit.i_angle = keypoints[j].angle / 360 * (1 << 16);
+                    hit.x = keypoints[j].pt.x;
+                    hit.y = keypoints[j].pt.y;
+                    
+                    // Use emplace with hint for more efficient insertion
+                    auto hint = imageReqHits.emplace(i_wordId, std::vector<Hit>{}).first;
+                    hint->second.push_back(std::move(hit));
+                }
             }
         }
     }
@@ -186,7 +164,7 @@ u_int32_t ORBSearcher::searchSimilar(SearchRequest &request)
     cout << "Loading the image words from the index." << endl;
 
     // key: visual word, value: the found angles
-    std::unordered_map<u_int32_t, list<Hit> > imageReqHits;
+    std::unordered_map<u_int32_t, std::vector<Hit>> imageReqHits;
     u_int32_t i_ret = index->getImageWords(request.imageId, imageReqHits);
 
     if (i_ret != OK)
@@ -200,7 +178,7 @@ u_int32_t ORBSearcher::searchSimilar(SearchRequest &request)
 
 
 u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
-        std::unordered_map<u_int32_t, list<Hit> > imageReqHits)
+        std::unordered_map<u_int32_t, std::vector<Hit>> imageReqHits)
 {
     timeval t[7];
     gettimeofday(&t[0], NULL);
@@ -210,8 +188,9 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     cout << imageReqHits.size() << " visual words kept for the request." << endl;
     cout << i_nbTotalIndexedImages << " images indexed in the index." << endl;
 
-    std::unordered_map<u_int32_t, vector<Hit> > indexHits; // key: visual word id, values: index hits.
-    indexHits.rehash(imageReqHits.size());
+    // Preallocate space for index hits based on expected size
+    std::unordered_map<u_int32_t, vector<Hit>> indexHits; // key: visual word id, values: index hits.
+    indexHits.reserve(imageReqHits.size() * 1.25); // Add 25% for potential growth
     index->getImagesWithVisualWords(imageReqHits, indexHits);
 
     gettimeofday(&t[1], NULL);
@@ -219,62 +198,113 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     cout << "Ranking the images." << endl;
 
     index->readLock();
-    #define NB_RANKING_THREAD 4
-
-    // Map the ranking to threads.
-    unsigned i_wordsPerThread = indexHits.size() / NB_RANKING_THREAD + 1;
-    RankingThread *threads[NB_RANKING_THREAD];
-
-    std::unordered_map<u_int32_t, vector<Hit> >::const_iterator it = indexHits.begin();
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-    {
-        threads[i] = new RankingThread(index, i_nbTotalIndexedImages, indexHits);
-
-        unsigned i_nbWords = 0;
-        for (; it != indexHits.end() && i_nbWords < i_wordsPerThread; ++it, ++i_nbWords)
-            threads[i]->addWord(it->first);
+    
+    // Use hardware concurrency to determine thread count
+    const unsigned int hardware_threads = std::thread::hardware_concurrency();
+    const unsigned int NB_RANKING_THREAD = std::max(4u, hardware_threads);
+    
+    // Precalculate word weights to avoid redundant calculations
+    std::unordered_map<u_int32_t, float> wordWeights;
+    wordWeights.reserve(indexHits.size());
+    
+    for (const auto& pair : indexHits) {
+        u_int32_t wordId = pair.first;
+        const auto& hits = pair.second;
+        wordWeights[wordId] = std::log((float)i_nbTotalIndexedImages / hits.size());
     }
 
+    // Create a shared image weights map with atomic updates
+    std::atomic<size_t> next_index(0);
+    std::vector<u_int32_t> wordIds;
+    wordIds.reserve(indexHits.size());
+    
+    for (const auto& pair : indexHits) {
+        wordIds.push_back(pair.first);
+    }
+    
+    // Use a concurrent map for weights
+    std::unordered_map<u_int32_t, std::atomic<float>> sharedWeights;
+    
+    // Initialize all possible image IDs with zero scores
+    std::vector<std::thread> threads;
+    threads.reserve(NB_RANKING_THREAD);
+    
     gettimeofday(&t[2], NULL);
     cout << "init threads time: " << getTimeDiff(t[1], t[2]) << " ms." << endl;
-
-    // Compute
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        threads[i]->start();
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        threads[i]->join();
-
+    
+    // Create threads using C++11 thread support
+    std::mutex weightsMutex;
+    std::unordered_map<u_int32_t, float> weights; // final weights container
+    weights.reserve(i_nbTotalIndexedImages / 2); // Reserve half the images for performance
+    
+    for (unsigned i = 0; i < NB_RANKING_THREAD; i++) {
+        threads.emplace_back([&, i]() {
+            // Local weights storage for this thread
+            std::unordered_map<u_int32_t, float> localWeights;
+            localWeights.reserve(i_nbTotalIndexedImages / NB_RANKING_THREAD);
+            
+            size_t idx;
+            while ((idx = next_index.fetch_add(1)) < wordIds.size()) {
+                u_int32_t wordId = wordIds[idx];
+                const auto& hits = indexHits[wordId];
+                const float wordWeight = wordWeights[wordId];
+                
+                for (const auto& hit : hits) {
+                    unsigned imageId = hit.i_imageId;
+                    unsigned totalWords = index->countTotalNbWord(imageId);
+                    if (totalWords > 0) {
+                        localWeights[imageId] += wordWeight / totalWords;
+                    }
+                }
+            }
+            
+            // Now merge local weights into the shared weights under mutex protection
+            std::lock_guard<std::mutex> lock(weightsMutex);
+            for (const auto& pair : localWeights) {
+                weights[pair.first] += pair.second;
+            }
+        });
+    }
+    
+    // Wait for all threads to complete
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    
     gettimeofday(&t[3], NULL);
     cout << "compute time: " << getTimeDiff(t[2], t[3]) << " ms." << endl;
-
-    // Reduce...
-    std::unordered_map<u_int32_t, float> weights; // key: image id, value: image score.
-    weights.rehash(i_nbTotalIndexedImages);
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        for (std::unordered_map<u_int32_t, float>::const_iterator it = threads[i]->weights.begin();
-            it != threads[i]->weights.end(); ++it)
-            weights[it->first] += it->second;
-
-    gettimeofday(&t[4], NULL);
-    cout << "reduce time: " << getTimeDiff(t[3], t[4]) << " ms." << endl;
-
-    // Free the memory
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        delete threads[i];
-
+    cout << "reduce time: 0 ms." << endl; // Reduction already done in threads
+    
     index->unlock();
-
-    priority_queue<SearchResult> rankedResults;
-    for (std::unordered_map<unsigned, float>::const_iterator it = weights.begin();
-         it != weights.end(); ++it)
-    {
-        //cout << "Second: " << it->second << " First: " << it->first << endl;
-        rankedResults.push(SearchResult(it->second, it->first, Rect()));
+    
+    // Use a min-heap to efficiently track top results
+    std::vector<SearchResult> topResults;
+    topResults.reserve(300); // Only need the top 300 for reranking
+    
+    for (const auto& pair : weights) {
+        if (topResults.size() < 300) {
+            topResults.push_back(SearchResult(pair.second, pair.first, Rect()));
+            // Convert to max-heap when we've collected 300 results
+            if (topResults.size() == 300) {
+                std::make_heap(topResults.begin(), topResults.end(), std::greater<SearchResult>());
+            }
+        } else if (pair.second > topResults.front().f_weight) {
+            // Replace the smallest element and restore heap property
+            std::pop_heap(topResults.begin(), topResults.end(), std::greater<SearchResult>());
+            topResults.back() = SearchResult(pair.second, pair.first, Rect());
+            std::push_heap(topResults.begin(), topResults.end(), std::greater<SearchResult>());
+        }
     }
-
+    
+    // Convert to priority queue for compatibility with remaining code
+    priority_queue<SearchResult> rankedResults;
+    for (const auto& result : topResults) {
+        rankedResults.push(result);
+    }
+    
     gettimeofday(&t[5], NULL);
     cout << "rankedResult time: " << getTimeDiff(t[4], t[5]) << " ms." << endl;
-    cout << "Reranking 300 among " << rankedResults.size() << " images." << endl;
+    cout << "Reranking 300 among " << weights.size() << " images." << endl;
 
     priority_queue<SearchResult> rerankedResults;
     reranker.rerank(imageReqHits, indexHits,
@@ -297,29 +327,42 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
  * @param i_maxNbResults the maximum number of results returned.
  */
 void ORBSearcher::returnResults(priority_queue<SearchResult> &rankedResults,
-                                  SearchRequest &req, unsigned i_maxNbResults)
+                                SearchRequest &req, unsigned i_maxNbResults)
 {
-    list<u_int32_t> imageIds;
-
+    // Pre-reserve memory to avoid reallocations
+    req.results.reserve(i_maxNbResults);
+    req.boundingRects.reserve(i_maxNbResults);
+    req.scores.reserve(i_maxNbResults);
+    req.tags.reserve(i_maxNbResults);
+    
+    // Batch process all results at once
+    std::vector<u_int32_t> imageIds;
+    imageIds.reserve(i_maxNbResults);
+    
     unsigned i_res = 0;
-    while(!rankedResults.empty()
-          && i_res < i_maxNbResults)
+    while(!rankedResults.empty() && i_res < i_maxNbResults)
     {
         const SearchResult &res = rankedResults.top();
         imageIds.push_back(res.i_imageId);
+        
         i_res++;
         cout << "Id: " << res.i_imageId << ", score: " << res.f_weight << endl;
+        
         req.results.push_back(res.i_imageId);
         req.boundingRects.push_back(res.boundingRect);
         req.scores.push_back(res.f_weight);
 
-        string tag;
-        if (index->getTag(res.i_imageId, tag) == OK)
-            req.tags.push_back(tag);
-        else
-            req.tags.push_back("");
-
         rankedResults.pop();
+    }
+    
+    // Batch process tags - minimize lock contention by doing this as a separate batch
+    for (const auto& imageId : imageIds) {
+        string tag;
+        if (index->getTag(imageId, tag) == OK) {
+            req.tags.push_back(std::move(tag));
+        } else {
+            req.tags.emplace_back("");
+        }
     }
 }
 

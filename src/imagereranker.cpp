@@ -64,8 +64,8 @@ void *RANSACThread::run()
 }
 
 
-void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                           unordered_map<u_int32_t, vector<Hit> > &indexHits,
+void ImageReranker::rerank(unordered_map<u_int32_t, std::vector<Hit>> &imagesReqHits,
+                           unordered_map<u_int32_t, std::vector<Hit>> &indexHits,
                            priority_queue<SearchResult> &rankedResultsIn,
                            priority_queue<SearchResult> &rankedResultsOut,
                            unsigned i_nbResults)
@@ -80,18 +80,14 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
     // Compute the histograms.
     unordered_map<u_int32_t, Histogram> histograms; // key: the image id, value: the corresponding histogram.
 
-    for (unordered_map<u_int32_t, list<Hit> >::const_iterator it = imagesReqHits.begin();
-         it != imagesReqHits.end(); ++it)
+    for (const auto& [i_wordId, hits] : imagesReqHits)
     {
         // Try to match all the visual words of the request image.
-        const unsigned i_wordId = it->first;
-        const list<Hit> &hits = it->second;
-
         assert(hits.size() == 1);
 
         // If there is several hits for the same word in the image...
-        const u_int16_t i_angle1 = hits.front().i_angle;
-        const Point2f point1(hits.front().x, hits.front().y);
+        const u_int16_t i_angle1 = hits[0].i_angle;
+        const Point2f point1(hits[0].x, hits[0].y);
         const vector<Hit> &hitIndex = indexHits[i_wordId];
 
         for (unsigned i = 0; i < hitIndex.size(); ++i)
