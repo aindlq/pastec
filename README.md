@@ -1,8 +1,6 @@
-Pastec
-======
+# Pastec
 
-Introduction
-------------
+## Introduction
 
 ### Presentation
 
@@ -12,7 +10,7 @@ Pastec can be, for example, used to recognize DVD covers in a mobile app or dete
 
 Pastec does not store the pixels of the images in its database. It stores a signature of each image thanks to the technique of [visual words](http://en.wikipedia.org/wiki/Visual_Word).
 
-Pastec offers a tiny HTTP API using JSON to add, remove, and search for images in the index.
+Pastec offers a HTTP API using JSON to add, remove, and search for images in the index.
 
 ### Intellectual property
 
@@ -21,252 +19,312 @@ It is based on the free packages of [OpenCV](http://www.opencv.org/) that are av
 
 More precisely, Pastec uses the [patent-free ORB descriptor](https://www.willowgarage.com/sites/default/files/orb_final.pdf) and not the well-known SIFT and SURF descriptors that are patented.
 
-Setup
------
+## Setup
 
+### Using Docker
 
+The easiest way to run Pastec is using Docker. A Dockerfile and docker-compose configuration are provided.
 
-## Compilation ###
- Dependancies To be compiled, Pastec requires [OpenCV 3.X](https://web.archive.org/web/20201207220940/http://www.opencv.org/) and [libmicrohttpd](https://web.archive.org/web/20201207220940/http://www.gnu.org/software/libmicrohttpd/) and libcurl. On **Ubuntu 18.04**, those package can be installed using the following command:
-
-<pre data-language="shell">sudo apt-get install libopencv-dev libmicrohttpd-dev
-</pre>
-
-If you are using another distribution or operating system, you may have to compile them yourself. ### Building Pastec uses cmake as build system. You also need Git to get the source code. On Ubuntu, they can be installed using the following command:
-
-<pre data-language="shell">sudo apt-get install cmake git
-</pre>
-
-To compile Pastec, first get the sources with the following command:
-
-<pre data-language="shell">git clone https://github.com/Visu4link/pastec.git
+1. Clone the repository:
+```bash
+git clone https://github.com/lklic/pastec.git
 cd pastec
-</pre>
+```
 
-Then create a compilation folder:
+2. Start with Docker Compose:
+```bash
+docker compose up -d
+```
 
-<pre data-language="shell">mkdir build
-</pre>
+This will start Pastec on port 4212.
 
-Go to this subdirectory and run cmake:
+### Manual Compilation
 
-<pre data-language="shell">cd build
+#### Dependencies
+To be compiled, Pastec requires [OpenCV 3.X](http://www.opencv.org/) and [libmicrohttpd](http://www.gnu.org/software/libmicrohttpd/) and libcurl. On **Ubuntu 18.04**, these packages can be installed using:
+
+```bash
+sudo apt-get install libopencv-dev libmicrohttpd-dev libcurl4-openssl-dev
+```
+
+#### Building
+Pastec uses cmake as build system. You also need Git to get the source code:
+
+```bash
+sudo apt-get install cmake git
+```
+
+To compile Pastec:
+
+```bash
+git clone https://github.com/Visu4link/pastec.git
+cd pastec
+mkdir build
+cd build
 cmake ../
-</pre>
+make
+```
 
-Finally, run make to compile Pastec:
+### Running
 
-<pre data-language="shell">make
-</pre>
+To start Pastec, run the **pastec** executable. It takes as mandatory argument the path to a file containing a list of ORB visual words:
 
-## Running
+```bash
+./pastec visualWordsORB.dat
+```
 
- To start Pastec, just run the **pastec** executable. It takes as mandatory argument the path to a file containing a list of ORB visual words. For now,  use the file visualWordsORB.dat. Next Pastec releases will contain tools that will allow you to generate your own list of visual words.
+Optional arguments:
+- `-p <port>`: Set the HTTP port (default: 4212)
+- `-i <index_file>`: Load an existing index file
+- `--https`: Enable HTTPS
+- `--auth-key <key>`: Set authentication key
 
-<pre data-language="shell">./pastec visualWordsORB.dat
-</pre>
+## API Documentation
 
-The default port pastec listens for the REST API is **4212**. You can set an other port with the **-p** argument. You can also give a path to an index file to load with the **-i** argument.</div>
+Pastec can be controlled using a simple HTTP API. By default, it listens to port 4212.
 
-API
------
-
-
-#### HTTP API
-
-Pastec can be controlled using a simple HTTP API. By default, it listens to the 4212 port but you can change this using the -p argument.
-
-Pastec answers are always formatted in JSON. They contains a mandatory type field that describes the result obtained or an error. Each image has an associated id that is a 32 bit unsigned integer. This id establishes the link in the index between the images and their signatures.
-
-All the uploaded images must have their **dimensions** above **150 pixels**. If one of the image dimension exceeds 1000 pixels, the image is resized so that the maximum dimension is set to 1000 pixels and the original aspect ratio is kept.
-
-Here is a detailed list of the API calls:
-
+All uploaded images must have their **dimensions** above **150 pixels**. If one of the image dimensions exceeds 1000 pixels, the image is resized so that the maximum dimension is set to 1000 pixels and the original aspect ratio is kept.
 
 ### Adding an image to the index
 
-This call allows to add the signature of an image in the index to make it available for searching. You need to provide the compressed binary data of the image and an id to identify it.
+Add the signature of an image to make it available for searching.
 
-*   **Path:** /index/images/<image id>
-*   **HTTP method:** POST
-*   **Data:** the binary data of the image to add compressed in JPEG **or** a JSON containing the URL of the image in the "url" field.
-*   **Answer type:** "IMAGE_ADDED"
-*   **Possible error types:** "IMAGE_NOT_DECODED", "IMAGE_SIZE_TOO_BIG", "IMAGE_SIZE_TOO_SMALL", "IMAGE_DOWNLOADER_HTTP_ERROR" with the HTTP status code in the "image_downloader_http_response_code" field.
-*   **Example:**
-    *   Command line with image data:
+* **Path:** /index/images/<image_id>
+* **HTTP method:** POST
+* **Data:** Image binary data (JPEG) or JSON with image URL
+* **Response:**
+```json
+{
+   "type": "IMAGE_ADDED",
+   "image_id": 23,
+   "nb_features_extracted": 542
+}
+```
 
-        <pre data-language="shell">curl -X POST --data-binary @/home/test/img/1.jpg http://localhost:4212/index/images/23
-        </pre>
+Example using binary data:
+```bash
+curl -X POST --data-binary @/path/to/image.jpg http://localhost:4212/index/images/23
+```
 
-    *   Answer:
-
-        <pre data-language="json">{
-           "image_id" : 23,
-           "type" : "IMAGE_ADDED"
-        }
-        </pre>
-
-    *   Command line with an image URL:
-
-        <pre data-language="shell">curl -X POST -d '{"url":"http://www.mydomain.com/path/to/my/image.jpg"}' http://localhost:4212/index/images/26
-        </pre>
-
-    *   Answer:
-
-        <pre data-language="json">{
-           "image_id" : 26,
-           "type" : "IMAGE_ADDED"
-        }
-        </pre>
+Example using URL:
+```bash
+curl -X POST -d '{"url":"http://example.com/image.jpg"}' http://localhost:4212/index/images/23
+```
 
 ### Removing an image from the index
 
-This call removes the signature of an image in the index thanks to its id. Be careful to not call often this method if your index is big because it is currently very slow.
+* **Path:** /index/images/<image_id>
+* **HTTP method:** DELETE
+* **Response:**
+```json
+{
+   "type": "IMAGE_REMOVED",
+   "image_id": 23
+}
+```
 
-*   **Path:** /index/images/<image id>
-*   **HTTP method:** DELETE
-*   **Answer type:** "IMAGE_REMOVED"
-*   **Possible error type:** "IMAGE_NOT_FOUND"
-*   **Example:**
-    *   Command line:
+Example:
+```bash
+curl -X DELETE http://localhost:4212/index/images/23
+```
 
-        <pre data-language="shell">curl -X DELETE http://localhost:4212/index/images/23
-        </pre>
+### Adding a tag to an image
 
-    *   Answer:
+* **Path:** /index/images/<image_id>/tag
+* **HTTP method:** POST
+* **Data:** Tag string
+* **Response:**
+```json
+{
+   "type": "IMAGE_TAG_ADDED"
+}
+```
 
-        <pre data-language="json">{
-           "image_id" : 23,
-           "type" : "IMAGE_REMOVED"
+Example:
+```bash
+curl -X POST --data "example_tag" http://localhost:4212/index/images/23/tag
+```
+
+### Removing a tag from an image
+
+* **Path:** /index/images/<image_id>/tag
+* **HTTP method:** DELETE
+* **Response:**
+```json
+{
+   "type": "IMAGE_TAG_REMOVED"
+}
+```
+
+Example:
+```bash
+curl -X DELETE http://localhost:4212/index/images/23/tag
+```
+
+### Search for an image
+
+Search for matches using an image.
+
+* **Path:** /index/searcher
+* **HTTP method:** POST
+* **Data:** Image binary data (JPEG) or JSON with image URL
+* **Response:**
+```json
+{
+    "type": "SEARCH_RESULTS",
+    "results": [
+        {
+            "image_id": 2,
+            "score": 0.85,
+            "tag": "example_tag",
+            "bounding_rect": {
+                "x": 100,
+                "y": 200,
+                "width": 300,
+                "height": 400
+            }
+        },
+        {
+            "image_id": 5,
+            "score": 0.75,
+            "tag": "another_tag",
+            "bounding_rect": {
+                "x": 150,
+                "y": 250,
+                "width": 350,
+                "height": 450
+            }
         }
-        </pre>
+    ]
+}
+```
 
-### Search request
+Each result object contains:
+- `image_id`: ID of the matched image
+- `score`: Confidence score (higher is better)
+- `tag`: Associated tag (if any)
+- `bounding_rect`: Match location in image
 
-This call performs a search in the index thanks to a request image. It returns the id of the matched images from the most to the least relevant ones.
+Example using binary data:
+```bash
+curl -X POST --data-binary @/path/to/query.jpg http://localhost:4212/index/searcher
+```
 
-Request JPEG images with a size approximately equal to 450x340 pixels and a 75% quality are usally enough to achieve a good matching. Their small size allows to quickly send them over a mobile network.
+Example using URL:
+```bash
+curl -X POST -d '{"url":"http://example.com/query.jpg"}' http://localhost:4212/index/searcher
+```
 
-*   **Path:** /index/searcher
-*   **HTTP method:** POST
-*   **Data:** the binary data of the request image compressed in JPEG **or** a JSON containing the URL of the image in the "url" field.
-*   **Answer:** "SEARCH_RESULTS" as type field and a list of the the matched image ids from the most to the least relevant one in the "image_ids" field
-*   **Possible error types:** "IMAGE_NOT_DECODED", "IMAGE_SIZE_TOO_BIG", "IMAGE_SIZE_TOO_SMALL"
-*   **Example:**
-    *   Command line with image data:
 
-        <pre data-language="shell">curl -X POST --data-binary @/home/test/img/request.jpg http://localhost:4212/index/searcher
-        </pre>
+### List all indexed image IDs
 
-    *   Answer:
+* **Path:** /index/imageIds
+* **HTTP method:** GET
+* **Response:**
+```json
+{
+    "type": "INDEX_IMAGE_IDS",
+    "image_ids": [1, 2, 3, 23, 45]
+}
+```
 
-        <pre data-language="json">{
-           "image_ids" : [ 2, 5, 43 ],
-           "type" : "SEARCH_RESULTS"
-        }
-        </pre>
+Example:
+```bash
+curl -X GET http://localhost:4212/index/imageIds
+```
 
-    *   Command line with an image URL:
+### Index Management
 
-        <pre data-language="shell">curl -X POST -d '{"url":"http://www.mydomain.com/path/to/my/image.jpg"}' http://localhost:4212/index/searcher
-        </pre>
+#### Save Index
+```bash
+curl -X POST -d '{"type":"WRITE", "index_path":"index.dat"}' http://localhost:4212/index/io
+```
 
-    *   Answer:
+#### Load Index
+```bash
+curl -X POST -d '{"type":"LOAD", "index_path":"index.dat"}' http://localhost:4212/index/io
+```
 
-        <pre data-language="json">{
-           "image_ids" : [ 8, 12, 73 ],
-           "type" : "SEARCH_RESULTS"
-        }
-        </pre>
+#### Clear Index
+```bash
+curl -X POST -d '{"type":"CLEAR"}' http://localhost:4212/index/io
+```
 
-### Clear an index
+#### Save Tags
+```bash
+curl -X POST -d '{"type":"WRITE_TAGS", "index_tags_path":"tags.dat"}' http://localhost:4212/index/io
+```
 
-This call erases all the data currently contained in the index.
-
-*   **Path:** /index/io
-*   **HTTP method:** POST
-*   **Answer type:** "INDEX_CLEARED"
-*   **Possible error types:** -
-*   **Example:**
-    *   Command line:
-
-        <pre data-language="shell">curl -X POST -d '{"type":"CLEAR"}' http://127.0.0.1:4212/index/io
-        </pre>
-
-    *   Answer:
-
-        <pre data-language="json">{
-           "type" : "INDEX_CLEARED"
-        }
-        </pre>
-
-### Load an index
-
-This call loads the index data in a provided path.
-
-*   **Path:** /index/io
-*   **HTTP method:** POST
-*   **Data:** a json with a type field of value "LOAD" and a "index_path" field that set the path where to read the index.
-*   **Answer type:** "INDEX_LOADED"
-*   **Possible error types:** "INDEX_NOT_FOUND"
-*   **Example:**
-    *   Command line:
-
-        <pre data-language="shell">curl -X POST -d '{"type":"LOAD", "index_path":"test.dat"}' http://127.0.0.1:4212/index/io
-        </pre>
-
-    *   Answer:
-
-        <pre data-language="json">{
-           "type" : "INDEX_LOADED"
-        }
-        </pre>
-
-### Save an index
-
-This call saves the index data in a specified path.
-
-*   **Path:** /index/io
-*   **HTTP method:** POST
-*   **Data:** a json with a type field of value "WRITE" and a "index_path" field that set the path where to write the index
-*   **Answer type:** "INDEX_WRITTEN"
-*   **Possible error types:** "INDEX_NOT_WRITTEN"
-*   **Example:**
-    *   Command line:
-
-        <pre data-language="shell">curl -X POST -d '{"type":"WRITE", "index_path":"test.dat"}' http://127.0.0.1:4212/index/io
-        </pre>
-
-    *   Answer:
-
-        <pre data-language="json">{
-           "type" : "INDEX_WRITTEN"
-        }
-        </pre>
+#### Load Tags
+```bash
+curl -X POST -d '{"type":"LOAD_TAGS", "index_tags_path":"tags.dat"}' http://localhost:4212/index/io
+```
 
 ### Ping Pastec
 
-This call sends a simple PING command to pastec that answers with a PONG.
+Simple health check:
 
-*   **Path:** /
-*   **HTTP method:** POST
-*   **Data:** a json with a "type" field of value "PONG"
-*   **Answer type:** "PONG"
-*   **Possible error types:** -
-*   **Example:**
-    *   Command line:
+```bash
+curl -X POST -d '{"type":"PING"}' http://localhost:4212/
+```
 
-        <pre data-language="shell">curl -X POST -d '{"type":"PING"}' http://localhost:4212/
-        </pre>
+Response:
+```json
+{
+    "type": "PONG"
+}
+```
 
-    *   Answer:
+### Error Handling
 
-        <pre data-language="json">{
-           "type" : "PONG"
-        }
-        </pre>
+All API responses include a `type` field indicating success or error:
 
-## Python API
+```json
+{
+    "type": "IMAGE_NOT_DECODED"
+}
+```
 
-In the python subdirectory of the source directory, you will also find a tiny python API that is actually just a wrapper of the HTTP API. We encourage you to read the small source to code to understand it.
+Common error types:
+- `IMAGE_NOT_DECODED`: Image could not be decoded
+- `IMAGE_SIZE_TOO_BIG`: Image dimensions exceed limits
+- `IMAGE_SIZE_TOO_SMALL`: Image dimensions below minimum
+- `IMAGE_NOT_FOUND`: Referenced image ID not found
+- `IMAGE_TAG_NOT_FOUND`: No tag found for image
+- `AUTHENTIFICATION_ERROR`: Invalid authentication key
+- `IMAGE_DOWNLOADER_HTTP_ERROR`: Error downloading image from URL
 
+## Python Client
+
+A Python client library is provided in the `python` directory. Example usage:
+
+```python
+from PastecLib import PastecConnection
+
+pastec = PastecConnection("localhost", 4212)
+
+# Add image from file
+pastec.indexImageFile(1, "image.jpg")
+
+# Add image from URL
+# This requires handling yourself, the Python lib doesn't have direct URL support
+
+# Add tag
+pastec.addTag(1, "example_tag")
+
+# Search with image file
+results = pastec.imageQueryFile("query.jpg")
+for image_id, tag in results:
+    print(f"Match: Image ID {image_id}, Tag: {tag}")
+
+# Save and load index
+pastec.writeIndex("index.dat")
+pastec.loadIndex("index.dat")
+
+# Save and load tags
+pastec.writeIndexTags("tags.dat")
+pastec.loadIndexTags("tags.dat")
+
+# Clear index
+pastec.clearIndex()
+```
