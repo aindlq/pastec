@@ -146,6 +146,46 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
     return IMAGE_ADDED;
 }
 
+/**
+ * @brief Add multiple images to the index in a single transaction.
+ * @param batchHits map of image IDs to their respective hit lists.
+ * @return IMAGE_ADDED on success.
+ */
+u_int32_t ORBIndex::addBatchImages(const unordered_map<u_int32_t, list<HitForward>>& batchHits)
+{
+    pthread_rwlock_wrlock(&rwLock);
+    
+    // Add all the new hits
+    for (const auto& pair : batchHits) {
+        u_int32_t imageId = pair.first;
+        const list<HitForward>& hitList = pair.second;
+        
+        for (const HitForward& hitFor : hitList) {
+            assert(imageId == hitFor.i_imageId);
+            Hit hitBack;
+            hitBack.i_imageId = hitFor.i_imageId;
+            hitBack.i_angle = hitFor.i_angle;
+            hitBack.x = hitFor.x;
+            hitBack.y = hitFor.y;
+            
+            if (buildForwardIndex) {
+                forwardIndex[hitFor.i_imageId].push_back(hitFor.i_wordId);
+            }
+            indexHits[hitFor.i_wordId].push_back(hitBack);
+            nbWords[hitFor.i_imageId]++;
+            nbOccurences[hitFor.i_wordId]++;
+            totalNbRecords++;
+        }
+        
+        cout << "Image " << imageId << " added in batch: " 
+             << hitList.size() << " hits." << endl;
+    }
+    
+    pthread_rwlock_unlock(&rwLock);
+    
+    return IMAGE_ADDED;
+}
+
 
 /**
  * @brief Add a string tag to an image.

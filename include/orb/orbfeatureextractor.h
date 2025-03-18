@@ -48,6 +48,11 @@ public:
 
     u_int32_t processNewImage(unsigned i_imageId, unsigned i_imgSize,
                               char *p_imgData, unsigned &i_nbFeaturesExtracted);
+    
+    // Extract features without adding to index (for batch processing)
+    u_int32_t extractFeatures(unsigned i_imageId, unsigned i_imgSize,
+                             char *p_imgData, list<HitForward> &hits,
+                             unsigned &i_nbFeaturesExtracted);
 
 private:
     ORBIndex *index;

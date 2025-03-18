@@ -10,6 +10,7 @@ services:
     restart: always
     volumes:
       - ./../pastec-index:/pastec/build/pastec-index:rw
+      - /opt/data/images:/opt/data/images:ro
     command:
       - /bin/sh 
       - -c

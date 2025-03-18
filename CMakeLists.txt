@@ -11,6 +11,7 @@ set(SOURCES      src/main.cpp
                  src/jsoncpp.cpp
                  src/requesthandler.cpp
                  src/imagedownloader.cpp
+                 src/batchprocessor.cpp
                  src/orb/orbfeatureextractor.cpp
                  src/orb/orbindex.cpp
                  src/orb/orbsearcher.cpp
@@ -26,6 +27,7 @@ set(HEADERS      include/thread.h
                  include/index.h
                  include/featureextractor.h
                  include/imagedownloader.h
+                 include/batchprocessor.h
                  include/json/json-forwards.h
                  include/json/json.h
                  include/orb/orbfeatureextractor.h
@@ -54,4 +56,3 @@ target_link_libraries(pastec ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(pastec ${OpenCV_LIBS})
 target_link_libraries(pastec ${LIBMICROHTTPD_LIBRARY})
 target_link_libraries(pastec ${CURL_LIBRARIES})
-

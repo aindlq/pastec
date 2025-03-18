@@ -24,6 +24,7 @@
 
 #include <httpserver.h>
 #include <imagedownloader.h>
+#include <batchprocessor.h>
 
 class FeatureExtractor;
 class Searcher;
@@ -42,6 +43,7 @@ public:
     RequestHandler(FeatureExtractor *featureExtractor,
                    Searcher *imageSearcher, Index *index,
                    ImageDownloader *imgDownloader, string authKey);
+    ~RequestHandler();
     void handleRequest(ConnectionInfo &conInfo);
 
 private:
@@ -54,6 +56,7 @@ private:
     Searcher *imageSearcher;
     Index *index;
     ImageDownloader *imgDownloader;
+    BatchProcessor *batchProcessor;
 
     string authKey;
 };

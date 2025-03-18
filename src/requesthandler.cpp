@@ -40,8 +40,17 @@ RequestHandler::RequestHandler(FeatureExtractor *featureExtractor,
                Searcher *imageSearcher, Index *index,
                ImageDownloader *imgDownloader, string authKey)
     : featureExtractor(featureExtractor), imageSearcher(imageSearcher),
-      index(index), authKey(authKey)
-{ }
+      index(index), imgDownloader(imgDownloader), authKey(authKey)
+{
+    // Initialize the batch processor
+    batchProcessor = new BatchProcessor(imgDownloader, featureExtractor, 
+                                       dynamic_cast<ORBIndex*>(index));
+}
+
+RequestHandler::~RequestHandler()
+{
+    delete batchProcessor;
+}
 
 
 /**
@@ -120,6 +129,7 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
     vector<string> parsedURI = parseURI(conInfo.url);
 
     string p_image[] = {"index", "images", "IDENTIFIER", ""};
+    string p_imageBatch[] = {"index", "images", "batch", ""};
     string p_tag[] = {"index", "images", "IDENTIFIER", "tag", ""};
     string p_searchImage[] = {"index", "searcher", ""};
     string p_ioIndex[] = {"index", "io", ""};
@@ -178,6 +188,53 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         u_int32_t i_ret = index->removeImage(i_imageId);
         ret["type"] = Converter::codeToString(i_ret);
         ret["image_id"] = Json::Value(i_imageId);
+    }
+    else if (testURIWithPattern(parsedURI, p_imageBatch)
+             && conInfo.connectionType == POST)
+    {
+        string dataStr(conInfo.uploadedData.begin(),
+                      conInfo.uploadedData.end());
+        
+        Json::Value data = StringToJson(dataStr);
+        
+        // Validate the request format
+        if (!data.isArray()) {
+            ret["type"] = Converter::codeToString(MISFORMATTED_REQUEST);
+            conInfo.answerString = JsonToString(ret);
+            return;
+        }
+        
+        // Convert JSON array to vector
+        vector<Json::Value> batchData;
+        for (unsigned i = 0; i < data.size(); i++) {
+            batchData.push_back(data[i]);
+        }
+        
+        // Process the batch
+        vector<BatchImageResult> results = batchProcessor->processBatch(batchData);
+        
+        // Create response
+        ret["type"] = Converter::codeToString(BATCH_PROCESSED);
+        
+        Json::Value resultsArray(Json::arrayValue);
+        for (const auto& result : results) {
+            Json::Value resultObj;
+            resultObj["image_id"] = result.imageId;
+            resultObj["url"] = result.url;
+            resultObj["type"] = Converter::codeToString(result.status);
+            
+            if (result.status == IMAGE_ADDED) {
+                resultObj["nb_features_extracted"] = result.nbFeaturesExtracted;
+            }
+            
+            if (!result.url.empty() && result.status != IMAGE_ADDED) {
+                resultObj["image_downloader_http_response_code"] = (Json::Int64)result.httpResponseCode;
+            }
+            
+            resultsArray.append(resultObj);
+        }
+        
+        ret["results"] = resultsArray;
     }
     else if (testURIWithPattern(parsedURI, p_tag)
              && conInfo.connectionType == POST)

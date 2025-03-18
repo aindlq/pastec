@@ -53,6 +53,7 @@ public:
     unsigned countTotalNbWord(unsigned i_imageId);
     unsigned getTotalNbIndexedImages();
     u_int32_t addImage(unsigned i_imageId, list<HitForward> hitList);
+    u_int32_t addBatchImages(const unordered_map<u_int32_t, list<HitForward>>& batchHits);
     u_int32_t addTag(const unsigned i_imageId, const string tag);
     u_int32_t removeImage(const unsigned i_imageId);
     u_int32_t getImageWords(const unsigned i_imageId, unordered_map<u_int32_t, list<Hit> > &hitList);
