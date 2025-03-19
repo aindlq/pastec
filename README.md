@@ -111,6 +111,64 @@ Example using URL:
 curl -X POST -d '{"url":"http://example.com/image.jpg"}' http://localhost:4212/index/images/23
 ```
 
+Example using local file URL:
+```bash
+curl -X POST -d '{"url":"file:///path/to/local/image.jpg"}' http://localhost:4212/index/images/23
+```
+
+> **Note:** When using the `file://` URL scheme with Docker, ensure that the directory containing your images is mounted as a volume in the container. For example: `docker run -v /path/on/host:/path/in/container pastec ...`
+
+### Batch processing images
+
+Process multiple images in a single request for improved performance. Optionally add tags during indexing.
+
+* **Path:** /index/images/batch
+* **HTTP method:** POST
+* **Data:** JSON array of objects with image_id, url, and optional tag
+* **Response:**
+```json
+{
+   "type": "BATCH_PROCESSED",
+   "results": [
+      {
+         "image_id": 23,
+         "url": "http://example.com/image1.jpg",
+         "type": "IMAGE_ADDED",
+         "nb_features_extracted": 542,
+         "tag": "example_tag",
+         "tag_status": "IMAGE_TAG_ADDED"
+      },
+      {
+         "image_id": 24,
+         "url": "http://example.com/image2.jpg",
+         "type": "IMAGE_ADDED",
+         "nb_features_extracted": 328
+      },
+      {
+         "image_id": 25,
+         "url": "http://invalid-url.com/image.jpg",
+         "type": "IMAGE_DOWNLOADER_HTTP_ERROR",
+         "image_downloader_http_response_code": 404
+      }
+   ]
+}
+```
+
+Example:
+```bash
+curl -X POST -d '[
+  {"image_id": 23, "url": "http://example.com/image1.jpg", "tag": "example_tag"},
+  {"image_id": 24, "url": "http://example.com/image2.jpg"},
+  {"image_id": 25, "url": "file:///path/to/local/image.jpg", "tag": "local_image"}
+]' http://localhost:4212/index/images/batch
+```
+
+The batch processing endpoint:
+- Processes images in parallel using multiple threads for better performance
+- Allows adding tags during initial indexing
+- Automatically writes indices to disk after batch operations
+- Returns detailed status for each image in the batch
+
 ### Removing an image from the index
 
 * **Path:** /index/images/<image_id>
@@ -214,6 +272,13 @@ Example using URL:
 ```bash
 curl -X POST -d '{"url":"http://example.com/query.jpg"}' http://localhost:4212/index/searcher
 ```
+
+Example using local file URL:
+```bash
+curl -X POST -d '{"url":"file:///path/to/local/query.jpg"}' http://localhost:4212/index/searcher
+```
+
+> **Note:** When using the `file://` URL scheme with Docker, ensure that the directory containing your images is mounted as a volume in the container.
 
 
 ### List all indexed image IDs
