@@ -39,6 +39,7 @@ using namespace std;
 struct BatchImageResult {
     u_int32_t imageId;
     string url;
+    string tag;  // Added tag field
     u_int32_t status;  // Using the same status codes as single image processing
     unsigned nbFeaturesExtracted;
     long httpResponseCode;  // For URL-based images
@@ -48,6 +49,7 @@ struct BatchImageResult {
 struct BatchProcessingTask {
     u_int32_t imageId;
     string url;
+    string tag;  // Added tag field
 };
 
 // Worker thread for batch processing
@@ -81,7 +83,7 @@ public:
     vector<BatchImageResult> processBatch(const vector<Json::Value>& batchData);
     
 private:
-    static const int NUM_THREADS = 10;  // Hardcoded number of threads
+    static const int NUM_THREADS = 20;  // Hardcoded number of threads
     
     ImageDownloader* imgDownloader;
     FeatureExtractor* featureExtractor;

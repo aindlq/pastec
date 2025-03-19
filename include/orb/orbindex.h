@@ -45,7 +45,7 @@ using namespace std;
 class ORBIndex : public Index
 {
 public:
-    ORBIndex(string indexPath, bool buildForwardIndex);
+    ORBIndex(string indexPath, string tagsPath, bool buildForwardIndex);
     virtual ~ORBIndex();
     void getImagesWithVisualWords(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
                                   std::unordered_map<u_int32_t, vector<Hit> > &indexHitsForReq);
@@ -54,6 +54,7 @@ public:
     unsigned getTotalNbIndexedImages();
     u_int32_t addImage(unsigned i_imageId, list<HitForward> hitList);
     u_int32_t addBatchImages(const unordered_map<u_int32_t, list<HitForward>>& batchHits);
+    u_int32_t addBatchTags(const unordered_map<u_int32_t, string>& batchTags);
     u_int32_t addTag(const unsigned i_imageId, const string tag);
     u_int32_t removeImage(const unsigned i_imageId);
     u_int32_t getImageWords(const unsigned i_imageId, unordered_map<u_int32_t, list<Hit> > &hitList);
@@ -74,6 +75,10 @@ private:
     u_int64_t nbOccurences[NB_VISUAL_WORDS];
     u_int64_t totalNbRecords;
     bool buildForwardIndex;
+
+    // Store the paths provided in the constructor
+    string storedIndexPath;
+    string storedTagsPath;
 
     unordered_map<u_int64_t, unsigned> nbWords;
     unordered_map<u_int64_t, vector<unsigned> > forwardIndex;

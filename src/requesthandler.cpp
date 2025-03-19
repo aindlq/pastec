@@ -225,6 +225,12 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
             
             if (result.status == IMAGE_ADDED) {
                 resultObj["nb_features_extracted"] = result.nbFeaturesExtracted;
+                
+                // Include tag status if a tag was provided
+                if (!result.tag.empty()) {
+                    resultObj["tag"] = result.tag;
+                    resultObj["tag_status"] = Converter::codeToString(IMAGE_TAG_ADDED);
+                }
             }
             
             if (!result.url.empty() && result.status != IMAGE_ADDED) {

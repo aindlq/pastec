@@ -44,6 +44,7 @@ void* BatchWorkerThread::run() {
         BatchImageResult result;
         result.imageId = task.imageId;
         result.url = task.url;
+        result.tag = task.tag;  // Store the tag in the result
         
         // Download image if URL is provided
         vector<char> imageData;
@@ -129,6 +130,8 @@ vector<BatchImageResult> BatchProcessor::processBatch(const vector<Json::Value>&
         BatchProcessingTask task;
         task.imageId = item["image_id"].asUInt();
         task.url = item["url"].asString();
+        // Extract tag if present
+        task.tag = item.isMember("tag") ? item["tag"].asString() : "";
         allTasks.push_back(task);
     }
     
@@ -171,6 +174,29 @@ vector<BatchImageResult> BatchProcessor::processBatch(const vector<Json::Value>&
     if (!imageHits.empty()) {
         index->addBatchImages(imageHits);
     }
+    
+    // Collect tags for successfully processed images
+    unordered_map<u_int32_t, string> imageTags;
+    for (const auto& result : results) {
+        // Only add tags for successfully processed images
+        if (result.status == IMAGE_ADDED && !result.tag.empty()) {
+            imageTags[result.imageId] = result.tag;
+        }
+    }
+    
+    // Log how many tags were collected for addition
+    cout << "DEBUG: Collected " << imageTags.size() << " tags for batch addition" << endl;
+    
+    // Add all tags in one transaction
+    if (!imageTags.empty()) {
+        index->addBatchTags(imageTags);
+    }
+    
+    // Write both indices to disk after batch processing
+    cout << "DEBUG: Writing indices to disk after batch processing" << endl;
+    index->write("");  // Pass empty string to use stored paths
+    index->writeTags("");  // Pass empty string to use stored paths
+    cout << "DEBUG: Indices written successfully" << endl;
     
     return results;
 }

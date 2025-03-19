@@ -15,4 +15,4 @@ services:
       - /bin/sh 
       - -c
       - |
-        ./pastec -p 4212 -i /pastec/build/pastec-index/pastec-index.dat /pastec/data/visualWordsORB.dat
+        ./pastec -p 4212 -i /pastec/build/pastec-index/pastec_index.dat -t /pastec/build/pastec-index/pastec_tags_index.dat /pastec/data/visualWordsORB.dat

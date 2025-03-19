@@ -31,8 +31,9 @@
 #include <messages.h>
 
 
-ORBIndex::ORBIndex(string indexPath, bool buildForwardIndex)
-    : buildForwardIndex(buildForwardIndex)
+ORBIndex::ORBIndex(string indexPath, string tagsPath, bool buildForwardIndex)
+    : buildForwardIndex(buildForwardIndex), totalNbRecords(0),
+      storedIndexPath(indexPath), storedTagsPath(tagsPath)
 {
     // Init the mutex.
     pthread_rwlock_init(&rwLock, NULL);
@@ -42,6 +43,8 @@ ORBIndex::ORBIndex(string indexPath, bool buildForwardIndex)
         nbOccurences[i] = 0;
 
     load(indexPath);
+    loadTags(tagsPath);
+    cout << "DEBUG: Index initialized with " << nbWords.size() << endl;
 }
 
 
@@ -176,14 +179,32 @@ u_int32_t ORBIndex::addBatchImages(const unordered_map<u_int32_t, list<HitForwar
             nbOccurences[hitFor.i_wordId]++;
             totalNbRecords++;
         }
-        
-        cout << "Image " << imageId << " added in batch: " 
-             << hitList.size() << " hits." << endl;
     }
     
     pthread_rwlock_unlock(&rwLock);
     
     return IMAGE_ADDED;
+}
+
+/**
+ * @brief Add multiple tags to images in a single transaction.
+ * @param batchTags map of image IDs to their respective tags.
+ * @return IMAGE_TAG_ADDED on success.
+ */
+u_int32_t ORBIndex::addBatchTags(const unordered_map<u_int32_t, string>& batchTags)
+{
+    if (batchTags.empty()) {
+        cout << "DEBUG: No tags to add in batch" << endl;
+        return OK;
+    }
+    
+    pthread_rwlock_wrlock(&rwLock);   
+    for (const auto& pair : batchTags) {
+        tags[pair.first] = pair.second;
+    }    
+    pthread_rwlock_unlock(&rwLock);
+        
+    return IMAGE_TAG_ADDED;
 }
 
 
@@ -411,7 +432,13 @@ u_int32_t ORBIndex::getTag(const unsigned i_imageId, string &tag)
 u_int32_t ORBIndex::write(string backwardIndexPath)
 {
     if (backwardIndexPath == "")
-        backwardIndexPath = DEFAULT_INDEX_PATH;
+    {
+        // If no path is provided, use the stored path from constructor
+        if (storedIndexPath != "")
+            backwardIndexPath = storedIndexPath;
+        else
+            backwardIndexPath = DEFAULT_INDEX_PATH;
+    }
 
     ofstream ofs;
 
@@ -459,7 +486,7 @@ u_int32_t ORBIndex::write(string backwardIndexPath)
 u_int32_t ORBIndex::clear()
 {
     pthread_rwlock_wrlock(&rwLock);
-    // Reset the nbOccurences table.
+        // Reset the nbOccurences table.
     for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
     {
         nbOccurences[i] = 0;
@@ -608,8 +635,6 @@ u_int32_t ORBIndex::loadTags(string indexTagsPath)
         char psz_tag[i_tagSize];
         ifs.read((char *)psz_tag, i_tagSize);
 
-        cout << i_imageId << " " << i_tagSize << " " << psz_tag << endl;
-
         // Save it into the memory.
         tags[i_imageId] = string(psz_tag);
     }
@@ -628,7 +653,13 @@ u_int32_t ORBIndex::loadTags(string indexTagsPath)
 u_int32_t ORBIndex::writeTags(string indexTagsPath)
 {
     if (indexTagsPath == "")
-        indexTagsPath = DEFAULT_INDEX_TAGS_PATH;
+    {
+        // If no path is provided, use the stored path from constructor
+        if (storedTagsPath != "")
+            indexTagsPath = storedTagsPath;
+        else
+            indexTagsPath = DEFAULT_INDEX_TAGS_PATH;
+    }
 
     ofstream ofs;
 
@@ -653,7 +684,6 @@ u_int32_t ORBIndex::writeTags(string indexTagsPath)
         ofs.write((char *)(&i_imageId), sizeof(u_int32_t));
         ofs.write((char *)(&i_tagSize), sizeof(u_int32_t));
         ofs.write((char *)(psz_tag), i_tagSize);
-        cout << "plop!" << endl;
     }
 
     ofs.close();
