@@ -215,7 +215,7 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     cout << "time: " << getTimeDiff(t[0], t[1]) << " ms." << endl;
     cout << "Ranking the images." << endl;
 
-    index->readLock();
+    // No locks needed since the index is read-only during queries
     #define NB_RANKING_THREAD 10
 
     // Map the ranking to threads.
@@ -258,8 +258,6 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     // Free the memory
     for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
         delete threads[i];
-
-    index->unlock();
 
     priority_queue<SearchResult> rankedResults;
     for (std::unordered_map<unsigned, float>::const_iterator it = weights.begin();

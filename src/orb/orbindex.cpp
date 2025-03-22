@@ -55,10 +55,9 @@ ORBIndex::ORBIndex(string indexPath, string tagsPath, bool buildForwardIndex)
  */
 unsigned ORBIndex::getWordNbOccurences(unsigned i_wordId)
 {
-    pthread_rwlock_rdlock(&rwLock);
+    // No locks needed since the index is read-only during queries
     assert(i_wordId < NB_VISUAL_WORDS);
     unsigned i_ret = nbOccurences[i_wordId];
-    pthread_rwlock_unlock(&rwLock);
     return i_ret;
 }
 
@@ -75,22 +74,19 @@ void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &im
     // Pre-allocate memory for the result to avoid reallocations
     indexHitsForReq.reserve(imagesReqHits.size());
     
-    // Use a fine-grained locking approach
+    // No locks needed since the index is read-only during queries
     for (unordered_map<u_int32_t, list<Hit> >::const_iterator it = imagesReqHits.begin();
          it != imagesReqHits.end(); ++it)
     {
         const unsigned i_wordId = it->first;
         
-        // Lock only when accessing the specific word
-        pthread_rwlock_rdlock(&rwLock);
+        // Direct access without locks
         const vector<Hit>& hits = indexHits[i_wordId];
         
         // Efficient copy with reserve to avoid reallocations
         vector<Hit>& destHits = indexHitsForReq[i_wordId];
         destHits.reserve(hits.size());
         destHits = hits;
-        
-        pthread_rwlock_unlock(&rwLock);
     }
 }
 
@@ -99,7 +95,7 @@ void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &im
  * @brief Return the number of words for an image
  * @param i_imageId the image id.
  * @return the number of words.
- * readLock() and unlock MUST be called before and after calling this function.
+ * No locks needed since the index is read-only during queries.
  */
 unsigned ORBIndex::countTotalNbWord(unsigned i_imageId)
 {
@@ -110,9 +106,8 @@ unsigned ORBIndex::countTotalNbWord(unsigned i_imageId)
 
 unsigned ORBIndex::getTotalNbIndexedImages()
 {
-    pthread_rwlock_rdlock(&rwLock);
+    // No locks needed since the index is read-only during queries
     unsigned i_ret = nbWords.size();
-    pthread_rwlock_unlock(&rwLock);
     return i_ret;
 }
 
@@ -310,8 +305,7 @@ u_int32_t ORBIndex::removeImage(const unsigned i_imageId)
  */
 u_int32_t ORBIndex::getImageWords(unsigned i_imageId, unordered_map<u_int32_t, list<Hit> > &hitList)
 {
-    pthread_rwlock_wrlock(&rwLock);
-
+    // No locks needed since the index is read-only during queries
     const unsigned i_nbTotalIndexedImages = getTotalNbIndexedImages();
     const unsigned i_maxNbOccurences = i_nbTotalIndexedImages > 10000 ?
                                        0.15 * i_nbTotalIndexedImages
@@ -323,7 +317,6 @@ u_int32_t ORBIndex::getImageWords(unsigned i_imageId, unordered_map<u_int32_t, l
     if (imgIt == nbWords.end())
     {
         cout << "Image " << i_imageId << " not found." << endl;
-        pthread_rwlock_unlock(&rwLock);
         return IMAGE_NOT_FOUND;
     }
 
@@ -376,8 +369,6 @@ u_int32_t ORBIndex::getImageWords(unsigned i_imageId, unordered_map<u_int32_t, l
         }
     }
 
-    pthread_rwlock_unlock(&rwLock);
-
     cout << "Image " << i_imageId << " found with " << hitList.size() << " words." << endl;
 
     return OK;
@@ -416,19 +407,15 @@ u_int32_t ORBIndex::removeTag(const unsigned i_imageId)
  */
 u_int32_t ORBIndex::getTag(const unsigned i_imageId, string &tag)
 {
-    pthread_rwlock_rdlock(&rwLock);
-
+    // No locks needed since the index is read-only during queries
     unordered_map<u_int32_t, string>::iterator tagIt =
         tags.find(i_imageId);
 
     if (tagIt == tags.end()) {
-        pthread_rwlock_unlock(&rwLock);
         return IMAGE_TAG_NOT_FOUND;
     }
 
     tag = tagIt->second;
-
-    pthread_rwlock_unlock(&rwLock);
 
     return OK;
 }
@@ -713,6 +700,7 @@ u_int32_t ORBIndex::writeTags(string indexTagsPath)
  */
 u_int32_t ORBIndex::getImageIds(vector<u_int32_t> &imageIds)
 {
+    // No locks needed since the index is read-only during queries
     imageIds.reserve(nbWords.size());
     for (unordered_map<u_int64_t, unsigned>::const_iterator it = nbWords.begin();
          it != nbWords.end(); ++it)
