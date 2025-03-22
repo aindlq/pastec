@@ -72,16 +72,26 @@ ORBIndex::~ORBIndex()
 void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
                                      unordered_map<u_int32_t, vector<Hit> > &indexHitsForReq)
 {
-    pthread_rwlock_rdlock(&rwLock);
-
+    // Pre-allocate memory for the result to avoid reallocations
+    indexHitsForReq.reserve(imagesReqHits.size());
+    
+    // Use a fine-grained locking approach
     for (unordered_map<u_int32_t, list<Hit> >::const_iterator it = imagesReqHits.begin();
          it != imagesReqHits.end(); ++it)
     {
         const unsigned i_wordId = it->first;
-        indexHitsForReq[i_wordId] = indexHits[i_wordId];
+        
+        // Lock only when accessing the specific word
+        pthread_rwlock_rdlock(&rwLock);
+        const vector<Hit>& hits = indexHits[i_wordId];
+        
+        // Efficient copy with reserve to avoid reallocations
+        vector<Hit>& destHits = indexHitsForReq[i_wordId];
+        destHits.reserve(hits.size());
+        destHits = hits;
+        
+        pthread_rwlock_unlock(&rwLock);
     }
-
-    pthread_rwlock_unlock(&rwLock);
 }
 
 

@@ -207,9 +207,6 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
 
     const unsigned i_nbTotalIndexedImages = index->getTotalNbIndexedImages();
 
-    cout << imageReqHits.size() << " visual words kept for the request." << endl;
-    cout << i_nbTotalIndexedImages << " images indexed in the index." << endl;
-
     std::unordered_map<u_int32_t, vector<Hit> > indexHits; // key: visual word id, values: index hits.
     indexHits.rehash(imageReqHits.size());
     index->getImagesWithVisualWords(imageReqHits, indexHits);
@@ -219,7 +216,7 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     cout << "Ranking the images." << endl;
 
     index->readLock();
-    #define NB_RANKING_THREAD 4
+    #define NB_RANKING_THREAD 10
 
     // Map the ranking to threads.
     unsigned i_wordsPerThread = indexHits.size() / NB_RANKING_THREAD + 1;

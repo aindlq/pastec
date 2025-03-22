@@ -22,45 +22,27 @@
 #ifndef PASTEC_ORBWORDINDEX_H
 #define PASTEC_ORBWORDINDEX_H
 
-#include <vector>
+#include <string>
+#include <sys/types.h>
 
 #include <opencv2/core/core.hpp>
-#include <opencv2/flann.hpp>
+#include <opencv2/flann/flann.hpp>
 
-// Include SimSIMD
-#include <simsimd/simsimd.h>
-
-using namespace cv;
-using namespace std;
-
-// Custom Hamming distance functor using SimSIMD
-class SimSIMDHamming {
-public:
-    typedef unsigned char ElementType;
-    typedef int ResultType;
-
-    template <typename Iterator1, typename Iterator2>
-    ResultType operator()(Iterator1 a, Iterator2 b, size_t size) const {
-        simsimd_distance_t distance;
-        simsimd_hamming_b8((simsimd_b8_t*)a, (simsimd_b8_t*)b, size, &distance);
-        return (ResultType)distance;
-    }
-};
-
+namespace pastec {
 
 class ORBWordIndex
 {
 public:
-    ORBWordIndex(string visualWordsPath);
+    ORBWordIndex(std::string visualWordPath);
     ~ORBWordIndex();
-    void knnSearch(const Mat &query, vector<int>& indices,
-                   vector<int> &dists, int knn);
+    u_int32_t getWordIndex(cv::Mat features, unsigned i_nbFeatures,
+                           unsigned *indexes);
 
 private:
-    bool readVisualWords(string fileName);
-
-    Mat *words;  // The matrix that stores the visual words.
-    cvflann::HierarchicalClusteringIndex<SimSIMDHamming> *kdIndex; // The kd-tree index with SimSIMD Hamming.
+    cv::flann::Index *index;
+    cv::Mat words;
 };
+
+} // namespace pastec
 
 #endif // PASTEC_ORBWORDINDEX_H

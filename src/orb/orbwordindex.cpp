@@ -35,10 +35,15 @@ ORBWordIndex::ORBWordIndex(string visualWordsPath)
 
     cout << "Building the word index." << endl;
 
+    // Initialize SimSIMD for optimal performance
+    simsimd_flush_denormals();
+
     cvflann::Matrix<unsigned char> m_features
             ((unsigned char*)words->ptr<unsigned char>(0), words->rows, words->cols);
-    kdIndex = new cvflann::HierarchicalClusteringIndex<cvflann::Hamming<unsigned char> >
-            (m_features,cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_RANDOM, 8, 100));
+    
+    // Use our custom SimSIMD Hamming distance functor
+    kdIndex = new cvflann::HierarchicalClusteringIndex<SimSIMDHamming>
+            (m_features, cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_RANDOM, 8, 100));
     kdIndex->buildIndex();
 }
 

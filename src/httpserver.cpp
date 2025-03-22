@@ -245,6 +245,10 @@ MHD_Result HTTPServer::readAuthHeader(void *cls, enum MHD_ValueKind kind,
         conInfo->authKey = string(value);
         return MHD_NO;
     }
+    else if (keyString == "content-type")
+    {
+        conInfo->contentType = string(value);
+    }
 
     return MHD_YES;
 }

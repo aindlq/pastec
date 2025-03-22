@@ -22,6 +22,10 @@
 #include <iostream>
 #include <signal.h>
 
+#ifdef USE_MIMALLOC
+#include <mimalloc.h>
+#endif
+
 #include <httpserver.h>
 #include <requesthandler.h>
 #include <orb/orbfeatureextractor.h>
@@ -48,6 +52,12 @@ void printUsage()
 
 int main(int argc, char** argv)
 {
+#ifdef USE_MIMALLOC
+    // Initialize mimalloc
+    mi_version();
+    cout << "Using mimalloc memory allocator" << endl;
+#endif
+
     cout << "Pastec Index v0.0.1" << endl;
 
     if (argc < 2)

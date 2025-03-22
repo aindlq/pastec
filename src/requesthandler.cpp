@@ -147,32 +147,44 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         && conInfo.connectionType == POST)
     {
         u_int32_t i_imageId = atoi(parsedURI[2].c_str());
-
         unsigned i_nbFeaturesExtracted;
-        u_int32_t i_ret = featureExtractor->processNewImage(
-            i_imageId, conInfo.uploadedData.size(), conInfo.uploadedData.data(),
-            i_nbFeaturesExtracted);
+        u_int32_t i_ret;
 
-        if (i_ret == IMAGE_NOT_DECODED)
+        // Check if the content type is JSON
+        if (conInfo.contentType.find("application/json") != string::npos)
         {
-            // Check if the data is an image URL to load
-            string dataStr(conInfo.uploadedData.begin(),
-                           conInfo.uploadedData.end());
-
+            // Process as JSON with URL
+            string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
+            
             if (imgDownloader->canDownloadImage(imgURL))
             {
                 std::vector<char> imgData;
                 long HTTPResponseCode;
                 i_ret = imgDownloader->getImageData(imgURL, imgData, HTTPResponseCode);
                 if (i_ret == OK)
+                {
                     i_ret = featureExtractor->processNewImage(
                         i_imageId, imgData.size(), imgData.data(),
                         i_nbFeaturesExtracted);
+                }
                 else
+                {
                     ret["image_downloader_http_response_code"] = (Json::Int64)HTTPResponseCode;
+                }
             }
+            else
+            {
+                i_ret = MISFORMATTED_REQUEST;
+            }
+        }
+        else
+        {
+            // Process as direct image upload
+            i_ret = featureExtractor->processNewImage(
+                i_imageId, conInfo.uploadedData.size(), conInfo.uploadedData.data(),
+                i_nbFeaturesExtracted);
         }
 
         ret["type"] = Converter::codeToString(i_ret);
@@ -267,18 +279,17 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
             && conInfo.connectionType == POST)
     {
         SearchRequest req;
-        req.imageData = conInfo.uploadedData;
         req.client = NULL;
-        u_int32_t i_ret = imageSearcher->searchImage(req);
+        u_int32_t i_ret;
 
-        if (i_ret == IMAGE_NOT_DECODED)
+        // Check if the content type is JSON
+        if (conInfo.contentType.find("application/json") != string::npos)
         {
-            // Check if the data is an image URL to load
-            string dataStr(conInfo.uploadedData.begin(),
-                        conInfo.uploadedData.end());
-
+            // Process as JSON with URL
+            string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
+            
             if (imgDownloader->canDownloadImage(imgURL))
             {
                 std::vector<char> imgData;
@@ -296,6 +307,16 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
                     return;
                 }
             }
+            else
+            {
+                i_ret = MISFORMATTED_REQUEST;
+            }
+        }
+        else
+        {
+            // Process as direct image upload
+            req.imageData = conInfo.uploadedData;
+            i_ret = imageSearcher->searchImage(req);
         }
 
         ret["type"] = Converter::codeToString(i_ret);
