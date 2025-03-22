@@ -48,7 +48,7 @@ public:
     ORBIndex(string indexPath, string tagsPath, bool buildForwardIndex);
     virtual ~ORBIndex();
     void getImagesWithVisualWords(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                                  std::unordered_map<u_int32_t, vector<Hit> > &indexHitsForReq);
+                                  std::unordered_map<u_int32_t, const vector<Hit>* > &indexHitsForReq);
     unsigned getWordNbOccurences(unsigned i_wordId);
     unsigned countTotalNbWord(unsigned i_imageId);
     unsigned getTotalNbIndexedImages();
@@ -70,6 +70,9 @@ public:
 
     void readLock();
     void unlock();
+    
+    // Get direct access to the word count vector
+    const vector<unsigned>& getWordCountVector() const;
 
 private:
     u_int64_t nbOccurences[NB_VISUAL_WORDS];
@@ -80,9 +83,9 @@ private:
     string storedIndexPath;
     string storedTagsPath;
 
-    unordered_map<u_int64_t, unsigned> nbWords;
-    unordered_map<u_int64_t, vector<unsigned> > forwardIndex;
-    unordered_map<u_int32_t, string> tags;
+    vector<unsigned> nbWords;
+    vector<vector<unsigned> > forwardIndex;
+    vector<string> tags;
     vector<Hit> indexHits[NB_VISUAL_WORDS];
 
     pthread_rwlock_t rwLock;

@@ -44,7 +44,7 @@ class ImageReranker
 public:
     ImageReranker() {}
     void rerank(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                std::unordered_map<u_int32_t, vector<Hit> > &indexHits,
+                std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
                 priority_queue<SearchResult> &rankedResultsIn,
                 priority_queue<SearchResult> &rankedResultsOut,
                 unsigned i_nbResults);

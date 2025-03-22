@@ -47,7 +47,9 @@ using namespace std::tr1;
 
 ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
     : index(index), wordIndex(wordIndex), orb(ORB::create(2000, 1.02, 100))
-{ }
+{
+    // Pre-compute word counts are already stored in the index
+}
 
 
 ORBSearcher::~ORBSearcher()
@@ -63,13 +65,19 @@ class RankingThread : public Thread
 {
 public:
     RankingThread(ORBIndex *index, const unsigned i_nbTotalIndexedImages,
-                  std::unordered_map<u_int32_t, vector<Hit> > &indexHits)
+                  std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits)
         : index(index), i_nbTotalIndexedImages(i_nbTotalIndexedImages),
           indexHits(indexHits) { }
 
     void addWord(u_int32_t i_wordId)
     {
         wordIds.push_back(i_wordId);
+    }
+
+    // Use pre-computed word counts directly from the index
+    unsigned getWordCount(u_int32_t imageId) {
+        // Direct access to the pre-computed word count
+        return index->countTotalNbWord(imageId);
     }
 
     void *run()
@@ -79,16 +87,16 @@ public:
         for (deque<u_int32_t>::const_iterator it = wordIds.begin();
             it != wordIds.end(); ++it)
         {
-            const vector<Hit> &hits = indexHits[*it];
+            const vector<Hit> *hits = indexHits[*it];
 
-            const float f_weight = log((float)i_nbTotalIndexedImages / hits.size());
+            const float f_weight = log((float)i_nbTotalIndexedImages / hits->size());
 
-            for (vector<Hit>::const_iterator it2 = hits.begin();
-                 it2 != hits.end(); ++it2)
+            for (vector<Hit>::const_iterator it2 = hits->begin();
+                 it2 != hits->end(); ++it2)
             {
                 /* TF-IDF according to the paper "Video Google:
                  * A Text Retrieval Approach to Object Matching in Videos" */
-                unsigned i_totalNbWords = index->countTotalNbWord(it2->i_imageId);
+                unsigned i_totalNbWords = getWordCount(it2->i_imageId);
                 weights[it2->i_imageId] += f_weight / i_totalNbWords;
             }
         }
@@ -98,7 +106,7 @@ public:
 
     ORBIndex *index;
     const unsigned i_nbTotalIndexedImages;
-    std::unordered_map<u_int32_t, vector<Hit> > &indexHits;
+    std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits;
     deque<u_int32_t> wordIds;
     std::unordered_map<u_int32_t, float> weights; // key: image id, value: image score.
 };
@@ -207,7 +215,7 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
 
     const unsigned i_nbTotalIndexedImages = index->getTotalNbIndexedImages();
 
-    std::unordered_map<u_int32_t, vector<Hit> > indexHits; // key: visual word id, values: index hits.
+    std::unordered_map<u_int32_t, const vector<Hit>* > indexHits; // key: visual word id, values: index hits.
     indexHits.rehash(imageReqHits.size());
     index->getImagesWithVisualWords(imageReqHits, indexHits);
 
@@ -222,7 +230,7 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     unsigned i_wordsPerThread = indexHits.size() / NB_RANKING_THREAD + 1;
     RankingThread *threads[NB_RANKING_THREAD];
 
-    std::unordered_map<u_int32_t, vector<Hit> >::const_iterator it = indexHits.begin();
+    std::unordered_map<u_int32_t, const vector<Hit>* >::const_iterator it = indexHits.begin();
     for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
     {
         threads[i] = new RankingThread(index, i_nbTotalIndexedImages, indexHits);

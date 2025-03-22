@@ -66,7 +66,7 @@ void *RANSACThread::run()
 
 
 void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                           unordered_map<u_int32_t, vector<Hit> > &indexHits,
+                           unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
                            priority_queue<SearchResult> &rankedResultsIn,
                            priority_queue<SearchResult> &rankedResultsOut,
                            unsigned i_nbResults)
@@ -93,15 +93,15 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
         // If there is several hits for the same word in the image...
         const u_int16_t i_angle1 = hits.front().i_angle;
         const Point2f point1(hits.front().x, hits.front().y);
-        const vector<Hit> &hitIndex = indexHits[i_wordId];
+        const vector<Hit> *hitIndex = indexHits[i_wordId];
 
-        for (unsigned i = 0; i < hitIndex.size(); ++i)
+        for (unsigned i = 0; i < hitIndex->size(); ++i)
         {
-            const u_int32_t i_imageId = hitIndex[i].i_imageId;
+            const u_int32_t i_imageId = (*hitIndex)[i].i_imageId;
             // Test if the image belongs to the image to rerank.
             if (firstImageIds.find(i_imageId) != firstImageIds.end())
             {
-                const u_int16_t i_angle2 = hitIndex[i].i_angle;
+                const u_int16_t i_angle2 = (*hitIndex)[i].i_angle;
                 float f_diff = angleDiff(i_angle1, i_angle2);
                 unsigned bin = (f_diff - DIFF_MIN) / 360 * HISTOGRAM_NB_BINS;
                 assert(bin < HISTOGRAM_NB_BINS);
@@ -110,7 +110,7 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
                 histogram.bins[bin]++;
                 histogram.i_total++;
 
-                const Point2f point2(hitIndex[i].x, hitIndex[i].y);
+                const Point2f point2((*hitIndex)[i].x, (*hitIndex)[i].y);
                 RANSACTask &imgTask = imgTasks[i_imageId];
 
                 imgTask.points1.push_back(point1);
