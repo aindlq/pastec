@@ -33,82 +33,6 @@
 #include <imagereranker.h>
 
 
-void *RANSACThread::run()
-{
-    struct timeval t_start, t_end;
-    gettimeofday(&t_start, NULL);
-    
-    unsigned ransacAttempts = 0;
-    unsigned successfulRansacs = 0;
-    unsigned skippedDueToLowValue = 0;
-    unsigned skippedDueToFewPoints = 0;
-    unsigned skippedDueToZeroH = 0;
-    
-    for (unsigned i = 0; i < imageIds.size(); ++i)
-    {
-        const unsigned i_imageId = imageIds[i];
-        const Histogram histogram = histograms[i];
-        unsigned i_binMax = max_element(histogram.bins, histogram.bins + HISTOGRAM_NB_BINS) - histogram.bins;
-        float i_maxVal = histogram.bins[i_binMax];
-        
-        if (i_maxVal > 10)
-        {
-            RANSACTask &task = imgTasks[i_imageId];
-            assert(task.points1.size() == task.points2.size());
-
-            if (task.points1.size() >= RANSAC_MIN_INLINERS)
-            {
-                ransacAttempts++;
-                struct timeval t_ransac_start, t_ransac_end;
-                gettimeofday(&t_ransac_start, NULL);
-                
-                Mat H = pastecEstimateRigidTransform(task.points2, task.points1, true);
-                
-                gettimeofday(&t_ransac_end, NULL);
-                unsigned long ransac_time = ((t_ransac_end.tv_sec - t_ransac_start.tv_sec) * 1000000
-                                           + (t_ransac_end.tv_usec - t_ransac_start.tv_usec)) / 1000;
-                
-                if (countNonZero(H) == 0) {
-                    skippedDueToZeroH++;
-                    continue;
-                }
-
-                Rect bRect1 = boundingRect(task.points1);
-
-                pthread_mutex_lock(&mutex);
-                rankedResultsOut.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
-                pthread_mutex_unlock(&mutex);
-                
-                successfulRansacs++;
-                
-                cout << "[RANSACThread] RANSAC for image " << i_imageId 
-                     << " took " << ransac_time << " ms with " 
-                     << task.points1.size() << " points, max val: " << i_maxVal << endl;
-            }
-            else {
-                skippedDueToFewPoints++;
-            }
-        }
-        else {
-            skippedDueToLowValue++;
-        }
-    }
-    
-    gettimeofday(&t_end, NULL);
-    unsigned long total_time = ((t_end.tv_sec - t_start.tv_sec) * 1000000
-                              + (t_end.tv_usec - t_start.tv_usec)) / 1000;
-    
-    cout << "[RANSACThread] Processed " << imageIds.size() << " images in " << total_time << " ms" << endl;
-    cout << "[RANSACThread] RANSAC attempts: " << ransacAttempts 
-         << ", successful: " << successfulRansacs 
-         << ", skipped (low val): " << skippedDueToLowValue
-         << ", skipped (few points): " << skippedDueToFewPoints
-         << ", skipped (zero H): " << skippedDueToZeroH << endl;
-    
-    return NULL;
-}
-
-
 /**
  * @brief Rerank images using a vector of sorted results.
  * @param imagesReqHits the hits of the request image.
@@ -174,7 +98,8 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
     gettimeofday(&t_start, NULL);
     t_extract = t_start; // For timing consistency with old code
 
-    unordered_map<u_int32_t, RANSACTask> imgTasks;
+    // Use PointPairs instead of RANSACTask
+    unordered_map<u_int32_t, PointPairs> imgPointPairs;
 
     // Compute the histograms.
     unordered_map<u_int32_t, Histogram> histograms; // key: the image id, value: the corresponding histogram.
@@ -223,10 +148,10 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
                 totalHistogramEntries++;
 
                 const Point2f point2((*hitIndex)[i].x, (*hitIndex)[i].y);
-                RANSACTask &imgTask = imgTasks[i_imageId];
+                PointPairs &pointPairs = imgPointPairs[i_imageId];
 
-                imgTask.points1.push_back(point1);
-                imgTask.points2.push_back(point2);
+                pointPairs.points1.push_back(point1);
+                pointPairs.points2.push_back(point2);
                 totalPointPairs++;
             }
         }
@@ -244,45 +169,78 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
          << ", histogram entries: " << totalHistogramEntries 
          << ", point pairs: " << totalPointPairs << endl;
     cout << "[ImageReranker] Images with histograms: " << histograms.size() 
-         << ", images with point pairs: " << imgTasks.size() << endl;
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+         << ", images with point pairs: " << imgPointPairs.size() << endl;
 
     // Create a vector to store the results
     vector<SearchResult> rankedResults;
     rankedResults.reserve(histograms.size()); // Reserve space for efficiency
 
-    #define NB_RANSAC_THREAD 4
-    RANSACThread *threads[NB_RANSAC_THREAD];
-
-    for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
-        threads[i] = new RANSACThread(mutex, imgTasks, rankedResults);
-
-    // Rank the images according to their histogram.
-    unsigned i = 0;
-    for (unordered_map<unsigned, Histogram>::iterator it = histograms.begin();
-         it != histograms.end(); ++it, ++i)
-    {
-        unsigned i_imageId = it->first;
-        Histogram histogram = it->second;
-        threads[i % NB_RANSAC_THREAD]->imageIds.push_back(i_imageId);
-        threads[i % NB_RANSAC_THREAD]->histograms.push_back(histogram);
-    }
-
-    // Compute
     gettimeofday(&t_threads, NULL);
-    cout << "[ImageReranker] Thread setup time: " 
+    cout << "[ImageReranker] Starting RANSAC processing at " 
          << ((t_threads.tv_sec - t_histogram.tv_sec) * 1000000 + (t_threads.tv_usec - t_histogram.tv_usec)) / 1000 
          << " ms" << endl;
-         
-    for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
-        threads[i]->start();
-    for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
+    
+    // Process all images in a single thread
+    unsigned ransacAttempts = 0;
+    unsigned successfulRansacs = 0;
+    unsigned skippedDueToLowValue = 0;
+    unsigned skippedDueToFewPoints = 0;
+    unsigned skippedDueToZeroH = 0;
+    
+    // Rank the images according to their histogram.
+    for (const auto& histogramPair : histograms)
     {
-        threads[i]->join();
-        delete threads[i];
-    }
+        const unsigned i_imageId = histogramPair.first;
+        const Histogram& histogram = histogramPair.second;
+        
+        // Find the maximum bin value
+        unsigned i_binMax = max_element(histogram.bins, histogram.bins + HISTOGRAM_NB_BINS) - histogram.bins;
+        float i_maxVal = histogram.bins[i_binMax];
+        
+        if (i_maxVal > 10)
+        {
+            const PointPairs& pointPairs = imgPointPairs[i_imageId];
+            assert(pointPairs.points1.size() == pointPairs.points2.size());
 
-    pthread_mutex_destroy(&mutex);
+            if (pointPairs.points1.size() >= RANSAC_MIN_INLINERS)
+            {
+                ransacAttempts++;
+                struct timeval t_ransac_start, t_ransac_end;
+                gettimeofday(&t_ransac_start, NULL);
+                
+                Mat H = RANSACHelper::pastecEstimateRigidTransform(pointPairs.points2, pointPairs.points1, true);
+                
+                gettimeofday(&t_ransac_end, NULL);
+                unsigned long ransac_time = RANSACHelper::getTimeDiff(t_ransac_start, t_ransac_end);
+                
+                if (countNonZero(H) == 0) {
+                    skippedDueToZeroH++;
+                    continue;
+                }
+
+                Rect bRect1 = boundingRect(pointPairs.points1);
+                rankedResults.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
+                
+                successfulRansacs++;
+                
+                cout << "[ImageReranker] RANSAC for image " << i_imageId 
+                     << " took " << ransac_time << " ms with " 
+                     << pointPairs.points1.size() << " points, max val: " << i_maxVal << endl;
+            }
+            else {
+                skippedDueToFewPoints++;
+            }
+        }
+        else {
+            skippedDueToLowValue++;
+        }
+    }
+    
+    cout << "[ImageReranker] RANSAC stats: attempts: " << ransacAttempts 
+         << ", successful: " << successfulRansacs 
+         << ", skipped (low val): " << skippedDueToLowValue
+         << ", skipped (few points): " << skippedDueToFewPoints
+         << ", skipped (zero H): " << skippedDueToZeroH << endl;
     
     gettimeofday(&t_end, NULL);
     cout << "[ImageReranker] RANSAC threads total time: " 

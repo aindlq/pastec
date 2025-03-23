@@ -63,17 +63,15 @@ private:
 };
 
 
-// A task that must be performed when the rerankRANSAC function is called.
-struct RANSACTask
+// Point pairs for RANSAC
+struct PointPairs
 {
     vector<Point2f> points1;
     vector<Point2f> points2;
 };
 
-
 #define HISTOGRAM_NB_BINS 32
 #define DIFF_MIN -360.0f / (2.0f * HISTOGRAM_NB_BINS)
-
 
 struct Histogram
 {
@@ -86,42 +84,23 @@ struct Histogram
     unsigned i_total;
 };
 
-
 #define RANSAC_MIN_INLINERS 12
 
-
-class RANSACThread : public Thread
+// Helper functions for RANSAC
+class RANSACHelper
 {
 public:
-    RANSACThread(pthread_mutex_t &mutex,
-                 std::unordered_map<u_int32_t, RANSACTask> &imgTasks,
-                 vector<SearchResult> &rankedResultsOut)
-        : mutex(mutex), imgTasks(imgTasks), rankedResultsOut(rankedResultsOut),
-          wordCountCalls(0)
-    { }
-
-public:
-    void *run();
+    static void getRTMatrix(const Point2f* a, const Point2f* b,
+                     int count, Mat& M, bool fullAffine);
+    static cv::Mat pastecEstimateRigidTransform(InputArray src1, InputArray src2,
+                                         bool fullAffine);
     
     // Helper method to calculate time difference in milliseconds
-    unsigned long getTimeDiff(const timeval t1, const timeval t2) const
+    static unsigned long getTimeDiff(const timeval t1, const timeval t2)
     {
         return ((t2.tv_sec - t1.tv_sec) * 1000000
                 + (t2.tv_usec - t1.tv_usec)) / 1000;
     }
-
-    pthread_mutex_t &mutex;
-    std::unordered_map<u_int32_t, RANSACTask> &imgTasks;
-    vector<SearchResult> &rankedResultsOut;
-    deque<unsigned> imageIds;
-    deque<Histogram> histograms;
-    unsigned wordCountCalls; // Counter for tracking getWordCount calls
-
-private:
-    void getRTMatrix(const Point2f* a, const Point2f* b,
-                     int count, Mat& M, bool fullAffine);
-    cv::Mat pastecEstimateRigidTransform(InputArray src1, InputArray src2,
-                                         bool fullAffine);
 };
 
 
