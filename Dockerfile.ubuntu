@@ -35,8 +35,9 @@ WORKDIR /app/build
 RUN cmake ../ \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_C_FLAGS="-mavx512f -mavx512dq" \
-    -DCMAKE_CXX_FLAGS="-mavx512f -mavx512dq" \
+    -DCMAKE_C_FLAGS="-mavx512f -mavx512dq -mavx512fp16 -mavx512bf16" \
+    -DCMAKE_CXX_FLAGS="-mavx512f -mavx512dq -mavx512fp16 -mavx512bf16" \
+    -DSIMSIMD_TARGET_SAPPHIRE=1 \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_PASTEC_LIB=ON \
     -DBUILD_PASTEC_EXE=ON \

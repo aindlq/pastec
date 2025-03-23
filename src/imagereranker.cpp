@@ -35,12 +35,22 @@
 
 void *RANSACThread::run()
 {
+    struct timeval t_start, t_end;
+    gettimeofday(&t_start, NULL);
+    
+    unsigned ransacAttempts = 0;
+    unsigned successfulRansacs = 0;
+    unsigned skippedDueToLowValue = 0;
+    unsigned skippedDueToFewPoints = 0;
+    unsigned skippedDueToZeroH = 0;
+    
     for (unsigned i = 0; i < imageIds.size(); ++i)
     {
         const unsigned i_imageId = imageIds[i];
         const Histogram histogram = histograms[i];
         unsigned i_binMax = max_element(histogram.bins, histogram.bins + HISTOGRAM_NB_BINS) - histogram.bins;
         float i_maxVal = histogram.bins[i_binMax];
+        
         if (i_maxVal > 10)
         {
             RANSACTask &task = imgTasks[i_imageId];
@@ -48,38 +58,130 @@ void *RANSACThread::run()
 
             if (task.points1.size() >= RANSAC_MIN_INLINERS)
             {
+                ransacAttempts++;
+                struct timeval t_ransac_start, t_ransac_end;
+                gettimeofday(&t_ransac_start, NULL);
+                
                 Mat H = pastecEstimateRigidTransform(task.points2, task.points1, true);
-
-                if (countNonZero(H) == 0)
+                
+                gettimeofday(&t_ransac_end, NULL);
+                unsigned long ransac_time = ((t_ransac_end.tv_sec - t_ransac_start.tv_sec) * 1000000
+                                           + (t_ransac_end.tv_usec - t_ransac_start.tv_usec)) / 1000;
+                
+                if (countNonZero(H) == 0) {
+                    skippedDueToZeroH++;
                     continue;
+                }
 
                 Rect bRect1 = boundingRect(task.points1);
 
                 pthread_mutex_lock(&mutex);
-                rankedResultsOut.push(SearchResult(i_maxVal, i_imageId, bRect1));
+                rankedResultsOut.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
                 pthread_mutex_unlock(&mutex);
+                
+                successfulRansacs++;
+                
+                cout << "[RANSACThread] RANSAC for image " << i_imageId 
+                     << " took " << ransac_time << " ms with " 
+                     << task.points1.size() << " points, max val: " << i_maxVal << endl;
+            }
+            else {
+                skippedDueToFewPoints++;
             }
         }
+        else {
+            skippedDueToLowValue++;
+        }
     }
+    
+    gettimeofday(&t_end, NULL);
+    unsigned long total_time = ((t_end.tv_sec - t_start.tv_sec) * 1000000
+                              + (t_end.tv_usec - t_start.tv_usec)) / 1000;
+    
+    cout << "[RANSACThread] Processed " << imageIds.size() << " images in " << total_time << " ms" << endl;
+    cout << "[RANSACThread] RANSAC attempts: " << ransacAttempts 
+         << ", successful: " << successfulRansacs 
+         << ", skipped (low val): " << skippedDueToLowValue
+         << ", skipped (few points): " << skippedDueToFewPoints
+         << ", skipped (zero H): " << skippedDueToZeroH << endl;
+    
     return NULL;
 }
 
 
-void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                           unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
-                           priority_queue<SearchResult> &rankedResultsIn,
-                           priority_queue<SearchResult> &rankedResultsOut,
-                           unsigned i_nbResults)
+/**
+ * @brief Rerank images using a vector of sorted results.
+ * @param imagesReqHits the hits of the request image.
+ * @param indexHits the hits of the index.
+ * @param sortedResults the sorted vector of results (weight, imageId).
+ * @param i_nbResults the number of results to rerank.
+ * @return A vector of reranked search results.
+ */
+vector<SearchResult> ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                                         unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
+                                         const vector<pair<float, u_int32_t>> &sortedResults,
+                                         unsigned i_nbResults)
 {
+    struct timeval t_start, t_extract;
+    gettimeofday(&t_start, NULL);
+    
     unordered_set<u_int32_t> firstImageIds;
 
-    // Extract the first i_nbResults ranked images.
-    getFirstImageIds(rankedResultsIn, i_nbResults, firstImageIds);
+    // Extract the first i_nbResults ranked images from the vector.
+    getFirstImageIds(sortedResults, i_nbResults, firstImageIds);
+    
+    gettimeofday(&t_extract, NULL);
+    cout << "[ImageReranker] Extracted " << firstImageIds.size() << " top images from vector in " 
+         << ((t_extract.tv_sec - t_start.tv_sec) * 1000000 + (t_extract.tv_usec - t_start.tv_usec)) / 1000 
+         << " ms" << endl;
+         
+    // Continue with the common reranking logic
+    return rerankCommon(imagesReqHits, indexHits, firstImageIds);
+}
+
+/**
+ * @brief Return the first ids of ranked images from a sorted vector.
+ * @param sortedResults the sorted vector of results (weight, imageId).
+ * @param i_nbResults the number of images to return.
+ * @param firstImageIds a set to return the image ids.
+ */
+void ImageReranker::getFirstImageIds(const vector<pair<float, u_int32_t>> &sortedResults,
+                                    unsigned i_nbResults, unordered_set<u_int32_t> &firstImageIds)
+{
+    unsigned i_res = 0;
+    for (const auto& result : sortedResults)
+    {
+        if (i_res >= i_nbResults)
+            break;
+        
+        firstImageIds.insert(result.second); // Insert the image ID
+        i_res++;
+    }
+}
+
+/**
+ * @brief Common reranking implementation.
+ * @param imagesReqHits the hits of the request image.
+ * @param indexHits the hits of the index.
+ * @param firstImageIds the set of image IDs to rerank.
+ * @return A vector of reranked search results.
+ */
+vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                                               unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
+                                               unordered_set<u_int32_t> &firstImageIds)
+{
+    struct timeval t_start, t_extract, t_histogram, t_threads, t_end;
+    gettimeofday(&t_start, NULL);
+    t_extract = t_start; // For timing consistency with old code
 
     unordered_map<u_int32_t, RANSACTask> imgTasks;
 
     // Compute the histograms.
     unordered_map<u_int32_t, Histogram> histograms; // key: the image id, value: the corresponding histogram.
+    
+    unsigned totalMatches = 0;
+    unsigned totalHistogramEntries = 0;
+    unsigned totalPointPairs = 0;
 
     for (unordered_map<u_int32_t, list<Hit> >::const_iterator it = imagesReqHits.begin();
          it != imagesReqHits.end(); ++it)
@@ -94,6 +196,12 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
         const u_int16_t i_angle1 = hits.front().i_angle;
         const Point2f point1(hits.front().x, hits.front().y);
         const vector<Hit> *hitIndex = indexHits[i_wordId];
+        
+        if (!hitIndex) {
+            continue;
+        }
+        
+        unsigned matchesForThisWord = 0;
 
         for (unsigned i = 0; i < hitIndex->size(); ++i)
         {
@@ -101,6 +209,9 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
             // Test if the image belongs to the image to rerank.
             if (firstImageIds.find(i_imageId) != firstImageIds.end())
             {
+                matchesForThisWord++;
+                totalMatches++;
+                
                 const u_int16_t i_angle2 = (*hitIndex)[i].i_angle;
                 float f_diff = angleDiff(i_angle1, i_angle2);
                 unsigned bin = (f_diff - DIFF_MIN) / 360 * HISTOGRAM_NB_BINS;
@@ -109,23 +220,43 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
                 Histogram &histogram = histograms[i_imageId];
                 histogram.bins[bin]++;
                 histogram.i_total++;
+                totalHistogramEntries++;
 
                 const Point2f point2((*hitIndex)[i].x, (*hitIndex)[i].y);
                 RANSACTask &imgTask = imgTasks[i_imageId];
 
                 imgTask.points1.push_back(point1);
                 imgTask.points2.push_back(point2);
+                totalPointPairs++;
             }
         }
+        
+        if (matchesForThisWord > 0) {
+            cout << "[ImageReranker] Word " << i_wordId << " matched " << matchesForThisWord << " images" << endl;
+        }
     }
+    
+    gettimeofday(&t_histogram, NULL);
+    cout << "[ImageReranker] Built histograms in " 
+         << ((t_histogram.tv_sec - t_extract.tv_sec) * 1000000 + (t_histogram.tv_usec - t_extract.tv_usec)) / 1000 
+         << " ms" << endl;
+    cout << "[ImageReranker] Total matches: " << totalMatches 
+         << ", histogram entries: " << totalHistogramEntries 
+         << ", point pairs: " << totalPointPairs << endl;
+    cout << "[ImageReranker] Images with histograms: " << histograms.size() 
+         << ", images with point pairs: " << imgTasks.size() << endl;
 
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+    // Create a vector to store the results
+    vector<SearchResult> rankedResults;
+    rankedResults.reserve(histograms.size()); // Reserve space for efficiency
 
     #define NB_RANSAC_THREAD 4
     RANSACThread *threads[NB_RANSAC_THREAD];
 
     for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
-        threads[i] = new RANSACThread(mutex, imgTasks, rankedResultsOut);
+        threads[i] = new RANSACThread(mutex, imgTasks, rankedResults);
 
     // Rank the images according to their histogram.
     unsigned i = 0;
@@ -139,6 +270,11 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
     }
 
     // Compute
+    gettimeofday(&t_threads, NULL);
+    cout << "[ImageReranker] Thread setup time: " 
+         << ((t_threads.tv_sec - t_histogram.tv_sec) * 1000000 + (t_threads.tv_usec - t_histogram.tv_usec)) / 1000 
+         << " ms" << endl;
+         
     for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
         threads[i]->start();
     for (unsigned i = 0; i < NB_RANSAC_THREAD; ++i)
@@ -148,6 +284,22 @@ void ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
     }
 
     pthread_mutex_destroy(&mutex);
+    
+    gettimeofday(&t_end, NULL);
+    cout << "[ImageReranker] RANSAC threads total time: " 
+         << ((t_end.tv_sec - t_threads.tv_sec) * 1000000 + (t_end.tv_usec - t_threads.tv_usec)) / 1000 
+         << " ms" << endl;
+    cout << "[ImageReranker] Total reranking time: " 
+         << ((t_end.tv_sec - t_start.tv_sec) * 1000000 + (t_end.tv_usec - t_start.tv_usec)) / 1000 
+         << " ms" << endl;
+    
+    // Sort the results by weight in descending order
+    sort(rankedResults.begin(), rankedResults.end(), 
+         [](const SearchResult& a, const SearchResult& b) {
+             return a.f_weight > b.f_weight;
+         });
+    
+    return rankedResults;
 }
 
 
@@ -165,27 +317,6 @@ public:
 private:
     int x, y;
 };
-
-
-/**
- * @brief Return the first ids of ranked images.
- * @param rankedResultsIn the ranked images.
- * @param i_nbResults the number of images to return.
- * @param firstImageIds a set to return the image ids.
- */
-void ImageReranker::getFirstImageIds(priority_queue<SearchResult> &rankedResultsIn,
-                                     unsigned i_nbResults, unordered_set<u_int32_t> &firstImageIds)
-{
-    unsigned i_res = 0;
-    while(!rankedResultsIn.empty()
-          && i_res < i_nbResults)
-    {
-        const SearchResult &res = rankedResultsIn.top();
-        firstImageIds.insert(res.i_imageId);
-        rankedResultsIn.pop();
-        i_res++;
-    }
-}
 
 
 float ImageReranker::angleDiff(unsigned i_angle1, unsigned i_angle2)

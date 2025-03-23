@@ -23,6 +23,7 @@
 #define PASTEC_IMAGERERANKER_H
 
 #include <sys/types.h>
+#include <sys/time.h>
 
 #include <queue>
 #include <list>
@@ -43,16 +44,22 @@ class ImageReranker
 {
 public:
     ImageReranker() {}
-    void rerank(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
-                std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
-                priority_queue<SearchResult> &rankedResultsIn,
-                priority_queue<SearchResult> &rankedResultsOut,
-                unsigned i_nbResults);
+    
+    // Main reranking method that works with vectors
+    vector<SearchResult> rerank(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                              std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
+                              const vector<pair<float, u_int32_t>> &sortedResults,
+                              unsigned i_nbResults);
 
 private:
     float angleDiff(unsigned i_angle1, unsigned i_angle2);
-    void getFirstImageIds(priority_queue<SearchResult> &rankedResultsIn,
-                          unsigned i_nbResults, unordered_set<u_int32_t> &firstImageIds);
+    void getFirstImageIds(const vector<pair<float, u_int32_t>> &sortedResults,
+                         unsigned i_nbResults, unordered_set<u_int32_t> &firstImageIds);
+    
+    // Common reranking implementation
+    vector<SearchResult> rerankCommon(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                                    std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
+                                    unordered_set<u_int32_t> &firstImageIds);
 };
 
 
@@ -88,18 +95,27 @@ class RANSACThread : public Thread
 public:
     RANSACThread(pthread_mutex_t &mutex,
                  std::unordered_map<u_int32_t, RANSACTask> &imgTasks,
-                 priority_queue<SearchResult> &rankedResultsOut)
-        : mutex(mutex), imgTasks(imgTasks), rankedResultsOut(rankedResultsOut)
+                 vector<SearchResult> &rankedResultsOut)
+        : mutex(mutex), imgTasks(imgTasks), rankedResultsOut(rankedResultsOut),
+          wordCountCalls(0)
     { }
 
 public:
     void *run();
+    
+    // Helper method to calculate time difference in milliseconds
+    unsigned long getTimeDiff(const timeval t1, const timeval t2) const
+    {
+        return ((t2.tv_sec - t1.tv_sec) * 1000000
+                + (t2.tv_usec - t1.tv_usec)) / 1000;
+    }
 
     pthread_mutex_t &mutex;
     std::unordered_map<u_int32_t, RANSACTask> &imgTasks;
-    priority_queue<SearchResult> &rankedResultsOut;
+    vector<SearchResult> &rankedResultsOut;
     deque<unsigned> imageIds;
     deque<Histogram> histograms;
+    unsigned wordCountCalls; // Counter for tracking getWordCount calls
 
 private:
     void getRTMatrix(const Point2f* a, const Point2f* b,

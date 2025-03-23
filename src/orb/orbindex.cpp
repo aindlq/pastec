@@ -80,11 +80,8 @@ void ORBIndex::getImagesWithVisualWords(unordered_map<u_int32_t, list<Hit> > &im
     {
         const unsigned i_wordId = it->first;
         
-        // Direct access without locks
-        const vector<Hit>& hits = indexHits[i_wordId];
-        
-        // Use references instead of deep copies
-        indexHitsForReq[i_wordId] = &hits;
+        // Direct access without locks - store pointer to original data instead of copying
+        indexHitsForReq[i_wordId] = &indexHits[i_wordId];
     }
 }
 

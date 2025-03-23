@@ -48,7 +48,7 @@ public:
     u_int32_t searchSimilar(SearchRequest &request);
 
 private:
-    void returnResults(priority_queue<SearchResult> &rankedResults,
+    void returnResults(vector<SearchResult> &rankedResults,
                        SearchRequest &req, unsigned i_maxNbResults);
     unsigned long getTimeDiff(const timeval t1, const timeval t2) const;
     u_int32_t processSimilar(SearchRequest &request,
