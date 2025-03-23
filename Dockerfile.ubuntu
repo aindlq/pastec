@@ -57,4 +57,4 @@ EXPOSE 4212
 
 VOLUME /app/data
 
-CMD ["/app/build/pastec_server", "-p", "4212", "/app/data/visualWordsORB.dat"]
+CMD ["/app/build/pastec_server", "--forward-index", "-p", "4212", "/app/data/visualWordsORB.dat"]

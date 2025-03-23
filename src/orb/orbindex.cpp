@@ -866,3 +866,51 @@ const vector<unsigned>& ORBIndex::getWordCountVector() const
 {
     return nbWords;
 }
+
+/**
+ * @brief Check if forward index is available.
+ * @return true if forward index is built, false otherwise.
+ */
+bool ORBIndex::hasForwardIndex() const
+{
+    return buildForwardIndex && !forwardIndex.empty();
+}
+
+/**
+ * @brief Get all words for an image from the forward index.
+ * @param i_imageId the image id.
+ * @return A const reference to the vector of word IDs for this image.
+ */
+const vector<unsigned>& ORBIndex::getForwardIndexWords(u_int32_t i_imageId) const
+{
+    static const vector<unsigned> emptyVector;
+    
+    if (!buildForwardIndex || i_imageId >= forwardIndex.size()) {
+        return emptyVector;
+    }
+    
+    return forwardIndex[i_imageId];
+}
+
+/**
+ * @brief Get a hit for a specific word and image.
+ * @param i_wordId the word id.
+ * @param i_imageId the image id.
+ * @return A pointer to the hit, or nullptr if not found.
+ */
+const Hit* ORBIndex::getHitForWordAndImage(u_int32_t i_wordId, u_int32_t i_imageId) const
+{
+    if (i_wordId >= NB_VISUAL_WORDS) {
+        return nullptr;
+    }
+    
+    const vector<Hit>& hits = indexHits[i_wordId];
+    
+    for (const Hit& hit : hits) {
+        if (hit.i_imageId == i_imageId) {
+            return &hit;
+        }
+    }
+    
+    return nullptr;
+}

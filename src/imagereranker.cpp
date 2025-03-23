@@ -31,6 +31,7 @@
 #include <opencv2/calib3d/calib3d.hpp>
 
 #include <imagereranker.h>
+#include <orb/orbindex.h>
 
 
 /**
@@ -156,9 +157,7 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
             }
         }
         
-        if (matchesForThisWord > 0) {
-            cout << "[ImageReranker] Word " << i_wordId << " matched " << matchesForThisWord << " images" << endl;
-        }
+        // Debug output removed to improve performance
     }
     
     gettimeofday(&t_histogram, NULL);
@@ -275,6 +274,179 @@ private:
     int x, y;
 };
 
+
+/**
+ * @brief Rerank images using the forward index for better performance.
+ * @param imagesReqHits the hits of the request image.
+ * @param index the ORB index with forward index.
+ * @param firstImageIds the set of image IDs to rerank.
+ * @return A vector of reranked search results.
+ */
+vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                                                          ORBIndex* index,
+                                                          unordered_set<u_int32_t> &firstImageIds)
+{
+    struct timeval t_start, t_histogram, t_threads, t_end;
+    gettimeofday(&t_start, NULL);
+    
+    // Create a map of query words for fast lookup
+    unordered_map<u_int32_t, Hit> queryWords;
+    for (const auto& pair : imagesReqHits) {
+        queryWords[pair.first] = pair.second.front();
+    }
+    
+    // Use PointPairs instead of RANSACTask
+    unordered_map<u_int32_t, PointPairs> imgPointPairs;
+    
+    // Compute the histograms
+    unordered_map<u_int32_t, Histogram> histograms;
+    
+    unsigned totalMatches = 0;
+    unsigned totalHistogramEntries = 0;
+    unsigned totalPointPairs = 0;
+    
+    // Process each image in the reranking set
+    for (const u_int32_t i_imageId : firstImageIds) {
+        // Get all words for this image from the forward index
+        const vector<unsigned>& imageWords = index->getForwardIndexWords(i_imageId);
+        
+        // For each word in this image
+        for (const unsigned i_wordId : imageWords) {
+            // Check if this word exists in the query image
+            auto queryIt = queryWords.find(i_wordId);
+            if (queryIt == queryWords.end()) {
+                continue;  // Word not in query, skip
+            }
+            
+            // Get the hit from the index for this word and image
+            const Hit* indexHit = index->getHitForWordAndImage(i_wordId, i_imageId);
+            if (!indexHit) {
+                continue;  // No hit found, skip
+            }
+            
+            totalMatches++;
+            
+            // Calculate angle difference
+            const u_int16_t i_angle1 = queryIt->second.i_angle;
+            const u_int16_t i_angle2 = indexHit->i_angle;
+            float f_diff = angleDiff(i_angle1, i_angle2);
+            unsigned bin = (f_diff - DIFF_MIN) / 360 * HISTOGRAM_NB_BINS;
+            assert(bin < HISTOGRAM_NB_BINS);
+            
+            // Update histogram
+            Histogram &histogram = histograms[i_imageId];
+            histogram.bins[bin]++;
+            histogram.i_total++;
+            totalHistogramEntries++;
+            
+            // Store point pairs for RANSAC
+            const Point2f point1(queryIt->second.x, queryIt->second.y);
+            const Point2f point2(indexHit->x, indexHit->y);
+            PointPairs &pointPairs = imgPointPairs[i_imageId];
+            
+            pointPairs.points1.push_back(point1);
+            pointPairs.points2.push_back(point2);
+            totalPointPairs++;
+        }
+    }
+    
+    gettimeofday(&t_histogram, NULL);
+    cout << "[ImageReranker] Built histograms using forward index in " 
+         << ((t_histogram.tv_sec - t_start.tv_sec) * 1000000 + (t_histogram.tv_usec - t_start.tv_usec)) / 1000 
+         << " ms" << endl;
+    cout << "[ImageReranker] Total matches: " << totalMatches 
+         << ", histogram entries: " << totalHistogramEntries 
+         << ", point pairs: " << totalPointPairs << endl;
+    cout << "[ImageReranker] Images with histograms: " << histograms.size() 
+         << ", images with point pairs: " << imgPointPairs.size() << endl;
+
+    // Create a vector to store the results
+    vector<SearchResult> rankedResults;
+    rankedResults.reserve(histograms.size()); // Reserve space for efficiency
+
+    gettimeofday(&t_threads, NULL);
+    cout << "[ImageReranker] Starting RANSAC processing at " 
+         << ((t_threads.tv_sec - t_histogram.tv_sec) * 1000000 + (t_threads.tv_usec - t_histogram.tv_usec)) / 1000 
+         << " ms" << endl;
+    
+    // Process all images in a single thread
+    unsigned ransacAttempts = 0;
+    unsigned successfulRansacs = 0;
+    unsigned skippedDueToLowValue = 0;
+    unsigned skippedDueToFewPoints = 0;
+    unsigned skippedDueToZeroH = 0;
+    
+    // Rank the images according to their histogram.
+    for (const auto& histogramPair : histograms)
+    {
+        const unsigned i_imageId = histogramPair.first;
+        const Histogram& histogram = histogramPair.second;
+        
+        // Find the maximum bin value
+        unsigned i_binMax = max_element(histogram.bins, histogram.bins + HISTOGRAM_NB_BINS) - histogram.bins;
+        float i_maxVal = histogram.bins[i_binMax];
+        
+        if (i_maxVal > 10)
+        {
+            const PointPairs& pointPairs = imgPointPairs[i_imageId];
+            assert(pointPairs.points1.size() == pointPairs.points2.size());
+
+            if (pointPairs.points1.size() >= RANSAC_MIN_INLINERS)
+            {
+                ransacAttempts++;
+                struct timeval t_ransac_start, t_ransac_end;
+                gettimeofday(&t_ransac_start, NULL);
+                
+                Mat H = RANSACHelper::pastecEstimateRigidTransform(pointPairs.points2, pointPairs.points1, true);
+                
+                gettimeofday(&t_ransac_end, NULL);
+                unsigned long ransac_time = RANSACHelper::getTimeDiff(t_ransac_start, t_ransac_end);
+                
+                if (countNonZero(H) == 0) {
+                    skippedDueToZeroH++;
+                    continue;
+                }
+
+                Rect bRect1 = boundingRect(pointPairs.points1);
+                rankedResults.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
+                
+                successfulRansacs++;
+                
+                cout << "[ImageReranker] RANSAC for image " << i_imageId 
+                     << " took " << ransac_time << " ms with " 
+                     << pointPairs.points1.size() << " points, max val: " << i_maxVal << endl;
+            }
+            else {
+                skippedDueToFewPoints++;
+            }
+        }
+        else {
+            skippedDueToLowValue++;
+        }
+    }
+    
+    cout << "[ImageReranker] RANSAC stats: attempts: " << ransacAttempts 
+         << ", successful: " << successfulRansacs 
+         << ", skipped (low val): " << skippedDueToLowValue
+         << ", skipped (few points): " << skippedDueToFewPoints
+         << ", skipped (zero H): " << skippedDueToZeroH << endl;
+    
+    gettimeofday(&t_end, NULL);
+    cout << "[ImageReranker] RANSAC threads total time: " 
+         << ((t_end.tv_sec - t_threads.tv_sec) * 1000000 + (t_end.tv_usec - t_threads.tv_usec)) / 1000 
+         << " ms" << endl;
+    cout << "[ImageReranker] Total reranking time with forward index: " 
+         << ((t_end.tv_sec - t_start.tv_sec) * 1000000 + (t_end.tv_usec - t_start.tv_usec)) / 1000 
+         << " ms" << endl;
+    
+    // Sort the results by weight in descending order
+    sort(rankedResults.begin(), rankedResults.end(), 
+         [](const SearchResult& a, const SearchResult& b) {
+             return a.f_weight > b.f_weight;
+         });
+    
+    return rankedResults;
+}
 
 float ImageReranker::angleDiff(unsigned i_angle1, unsigned i_angle2)
 {

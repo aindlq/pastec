@@ -73,6 +73,15 @@ public:
     
     // Get direct access to the word count vector
     const vector<unsigned>& getWordCountVector() const;
+    
+    // Check if forward index is available
+    bool hasForwardIndex() const;
+    
+    // Get all words for an image from the forward index
+    const vector<unsigned>& getForwardIndexWords(u_int32_t i_imageId) const;
+    
+    // Get a hit for a specific word and image
+    const Hit* getHitForWordAndImage(u_int32_t i_wordId, u_int32_t i_imageId) const;
 
 private:
     // Recalculate the total number of indexed images

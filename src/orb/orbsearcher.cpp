@@ -282,8 +282,25 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     }
     cout << endl;
 
-    // Rerank using the vector directly
-    vector<SearchResult> rerankedResults = reranker.rerank(imageReqHits, indexHits, sortedResults, TOP_N);
+    // Check if forward index is available and use the optimized reranking method
+    vector<SearchResult> rerankedResults;
+    ORBIndex* orbIndex = static_cast<ORBIndex*>(index);
+    
+    if (orbIndex->hasForwardIndex()) {
+        // Get the set of image IDs to rerank
+        unordered_set<u_int32_t> firstImageIds;
+        for (unsigned i = 0; i < min(TOP_N, (unsigned)sortedResults.size()); i++) {
+            firstImageIds.insert(sortedResults[i].second);
+        }
+        
+        cout << "Using forward index for reranking." << endl;
+        // Use the forward index reranking
+        rerankedResults = reranker.rerankUsingForwardIndex(imageReqHits, orbIndex, firstImageIds);
+    } else {
+        // Fall back to the original reranking
+        cout << "Forward index not available, using standard reranking." << endl;
+        rerankedResults = reranker.rerank(imageReqHits, indexHits, sortedResults, TOP_N);
+    }
 
     gettimeofday(&t[6], NULL);
     cout << "Reranking time: " << getTimeDiff(t[5], t[6]) << " ms." << endl;

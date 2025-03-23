@@ -50,6 +50,11 @@ public:
                               std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
                               const vector<pair<float, u_int32_t>> &sortedResults,
                               unsigned i_nbResults);
+                              
+    // Reranking method that uses the forward index for better performance
+    vector<SearchResult> rerankUsingForwardIndex(std::unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
+                                               class ORBIndex* index,
+                                               std::unordered_set<u_int32_t> &firstImageIds);
 
 private:
     float angleDiff(unsigned i_angle1, unsigned i_angle2);
