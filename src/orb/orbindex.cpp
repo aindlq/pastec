@@ -32,7 +32,7 @@
 
 
 ORBIndex::ORBIndex(string indexPath, string tagsPath, bool buildForwardIndex)
-    : buildForwardIndex(buildForwardIndex), totalNbRecords(0),
+    : buildForwardIndex(buildForwardIndex), totalNbRecords(0), m_totalIndexedImages(0),
       storedIndexPath(indexPath), storedTagsPath(tagsPath)
 {
     // Init the mutex.
@@ -103,17 +103,28 @@ unsigned ORBIndex::countTotalNbWord(unsigned i_imageId)
 }
 
 
+/**
+ * @brief Recalculate the total number of indexed images.
+ * This method counts the number of images that have at least one word in the index.
+ */
+void ORBIndex::recalculateTotalIndexedImages()
+{
+    m_totalIndexedImages = 0;
+    for (const auto& wordCount : nbWords) {
+        if (wordCount > 0) {
+            m_totalIndexedImages++;
+        }
+    }
+}
+
+/**
+ * @brief Return the total number of indexed images.
+ * @return the number of images that have at least one word in the index.
+ */
 unsigned ORBIndex::getTotalNbIndexedImages()
 {
     // No locks needed since the index is read-only during queries
-    // Count non-zero entries in the nbWords vector
-    unsigned count = 0;
-    for (const auto& wordCount : nbWords) {
-        if (wordCount > 0) {
-            count++;
-        }
-    }
-    return count;
+    return m_totalIndexedImages;
 }
 
 
@@ -163,6 +174,9 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
         nbOccurences[hitFor.i_wordId]++;
         totalNbRecords++;
     }
+    // Recalculate the total number of indexed images
+    recalculateTotalIndexedImages();
+    
     pthread_rwlock_unlock(&rwLock);
 
     if (!hitList.empty())
@@ -218,6 +232,9 @@ u_int32_t ORBIndex::addBatchImages(const unordered_map<u_int32_t, list<HitForwar
             totalNbRecords++;
         }
     }
+    
+    // Recalculate the total number of indexed images
+    recalculateTotalIndexedImages();
     
     pthread_rwlock_unlock(&rwLock);
     
@@ -336,6 +353,10 @@ u_int32_t ORBIndex::removeImage(const unsigned i_imageId)
             ++it;
         }
     }
+    
+    // Recalculate the total number of indexed images
+    recalculateTotalIndexedImages();
+    
     pthread_rwlock_unlock(&rwLock);
 
     cout << "Image " << i_imageId << " removed." << endl;
@@ -532,6 +553,8 @@ u_int32_t ORBIndex::clear()
     std::fill(tags.begin(), tags.end(), "");
 
     totalNbRecords = 0;
+    m_totalIndexedImages = 0; // Reset the cached count since all images are removed
+    
     pthread_rwlock_unlock(&rwLock);
 
     cout << "Index cleared." << endl;
@@ -651,6 +674,9 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
 
         indexAccess.close();
         delete[] wordOffSet;
+        
+        // Recalculate the total number of indexed images
+        recalculateTotalIndexedImages();
 
         pthread_rwlock_unlock(&rwLock);
 

@@ -24,14 +24,10 @@
 #include <sys/time.h>
 
 #include <set>
-#ifndef __APPLE__
-#include <tr1/unordered_set>
-#include <tr1/unordered_map>
-#else
 #include <unordered_set>
 #include <unordered_map>
-#endif
 #include <queue>
+#include <algorithm>  // For std::partial_sort
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -41,9 +37,7 @@
 #include <messages.h>
 #include <imageloader.h>
 
-#ifndef __APPLE__
-using namespace std::tr1;
-#endif
+// C++17 doesn't need tr1 namespace anymore
 
 ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
     : index(index), wordIndex(wordIndex), orb(ORB::create(2000, 1.02, 100))
@@ -56,90 +50,23 @@ ORBSearcher::~ORBSearcher()
 { }
 
 
-/**
- * @brief The RankingThread class
- * This threads computes the tf-idf weights of the images that contains the words
- * given in argument.
- */
-class RankingThread : public Thread
-{
-public:
-    RankingThread(ORBIndex *index, const unsigned i_nbTotalIndexedImages,
-                  std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits)
-        : index(index), i_nbTotalIndexedImages(i_nbTotalIndexedImages),
-          indexHits(indexHits), wordCounts(index->getWordCountVector()) 
-    {
-        // Reserve some initial capacity to avoid frequent reallocations
-        weightVec.reserve(1000);
-    }
-
-    void addWord(u_int32_t i_wordId)
-    {
-        wordIds.push_back(i_wordId);
-    }
-
-    void *run()
-    {
-        timeval t_start, t_init, t_end;
-        gettimeofday(&t_start, NULL);
-        
-        // Use a temporary map for accumulating weights
-        std::unordered_map<u_int32_t, float> tempWeights;
-        tempWeights.rehash(wordIds.size() * 10); // Estimate size based on word count
-        
-        gettimeofday(&t_init, NULL);
-        cout << "[RankingThread] Init time: " << getTimeDiff(t_start, t_init) << " ms." << endl;
-        
-        unsigned totalHitsProcessed = 0;
-
-        for (deque<u_int32_t>::const_iterator it = wordIds.begin();
-            it != wordIds.end(); ++it)
-        {
-            const vector<Hit> *hits = indexHits[*it];
-            totalHitsProcessed += hits->size();
-
-            const float f_weight = log((float)i_nbTotalIndexedImages / hits->size());
-
-            for (vector<Hit>::const_iterator it2 = hits->begin();
-                 it2 != hits->end(); ++it2)
-            {
-                /* TF-IDF according to the paper "Video Google:
-                 * A Text Retrieval Approach to Object Matching in Videos" */
-                // Direct access to word counts without function call or bounds checking
-                unsigned i_totalNbWords = wordCounts[it2->i_imageId];
-                tempWeights[it2->i_imageId] += f_weight / i_totalNbWords;
-            }
-        }
-        
-        // Convert map to vector only once at the end
-        weightVec.reserve(tempWeights.size());
-        for (const auto& pair : tempWeights) {
-            weightVec.emplace_back(pair.second, pair.first); // weight first for sorting
-        }
-        
-        gettimeofday(&t_end, NULL);
-        cout << "[RankingThread] Processing time: " << getTimeDiff(t_init, t_end) << " ms." << endl;
-        cout << "[RankingThread] Total time: " << getTimeDiff(t_start, t_end) << " ms." << endl;
-        cout << "[RankingThread] Words processed: " << wordIds.size() << endl;
-        cout << "[RankingThread] Total hits processed: " << totalHitsProcessed << endl;
-        cout << "[RankingThread] Unique images weighted: " << weightVec.size() << endl;
-
-        return NULL;
-    }
+// Helper function for sift-down operation in min-heap
+static void siftDown(std::pair<float, u_int32_t>* heap, size_t size, size_t idx) {
+    size_t smallest = idx;
+    size_t left = 2 * idx + 1;
+    size_t right = 2 * idx + 2;
     
-    unsigned long getTimeDiff(const timeval t1, const timeval t2) const
-    {
-        return ((t2.tv_sec - t1.tv_sec) * 1000000
-                + (t2.tv_usec - t1.tv_usec)) / 1000;
+    if (left < size && heap[left].first < heap[smallest].first)
+        smallest = left;
+        
+    if (right < size && heap[right].first < heap[smallest].first)
+        smallest = right;
+        
+    if (smallest != idx) {
+        std::swap(heap[idx], heap[smallest]);
+        siftDown(heap, size, smallest);
     }
-
-    ORBIndex *index;
-    const unsigned i_nbTotalIndexedImages;
-    std::unordered_map<u_int32_t, const vector<Hit>* > &indexHits;
-    deque<u_int32_t> wordIds;
-    vector<pair<float, u_int32_t>> weightVec; // weight, image id pairs for sorting
-    const vector<unsigned>& wordCounts; // Direct reference to word counts
-};
+}
 
 
 /**
@@ -274,84 +201,89 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     cout << "Max hits per word: " << maxHitsPerWord << ", words with no hits: " << wordsWithNoHits << endl;
     cout << "Ranking the images." << endl;
 
-    // No locks needed since the index is read-only during queries
-    #define NB_RANKING_THREAD 20
-
-    // Map the ranking to threads.
-    unsigned i_wordsPerThread = indexHits.size() / NB_RANKING_THREAD + 1;
-    RankingThread *threads[NB_RANKING_THREAD];
-
-    std::unordered_map<u_int32_t, const vector<Hit>* >::const_iterator it = indexHits.begin();
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-    {
-        threads[i] = new RankingThread(index, i_nbTotalIndexedImages, indexHits);
-
-        unsigned i_nbWords = 0;
-        for (; it != indexHits.end() && i_nbWords < i_wordsPerThread; ++it, ++i_nbWords)
-            threads[i]->addWord(it->first);
-    }
-
     gettimeofday(&t[2], NULL);
-    cout << "Thread initialization time: " << getTimeDiff(t[1], t[2]) << " ms." << endl;
+    cout << "Single-threaded ranking initialization time: " << getTimeDiff(t[1], t[2]) << " ms." << endl;
 
-    // Compute
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        threads[i]->start();
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        threads[i]->join();
+    // Get the maximum image ID and word counts
+    const unsigned maxImageId = index->getWordCountVector().size() - 1;
+    const vector<unsigned>& wordCounts = index->getWordCountVector();
+    
+    // Create a pre-allocated array for direct indexing of weights
+    vector<float> weights(maxImageId + 1, 0.0f);
+    
+    // Process all visual words in a single loop
+    unsigned totalHitsProcessed = 0;
+    
+    // Compute TF-IDF weights for all images
+    for (auto it = indexHits.begin(); it != indexHits.end(); ++it) {
+        const u_int32_t wordId = it->first;
+        const vector<Hit>* hits = it->second;
+        totalHitsProcessed += hits->size();
+        
+        // Calculate IDF weight for this word
+        const float f_weight = log((float)i_nbTotalIndexedImages / hits->size());
+        
+        // Update weights for all images containing this word
+        for (const Hit& hit : *hits) {
+            // TF-IDF calculation
+            unsigned i_totalNbWords = wordCounts[hit.i_imageId];
+            weights[hit.i_imageId] += f_weight / i_totalNbWords;
+        }
+    }
 
     gettimeofday(&t[3], NULL);
-    cout << "Thread computation time: " << getTimeDiff(t[2], t[3]) << " ms." << endl;
-
-    // Estimate the total size needed for the combined vector
-    size_t totalSize = 0;
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i) {
-        totalSize += threads[i]->weightVec.size();
-    }
+    cout << "Weight computation time: " << getTimeDiff(t[2], t[3]) << " ms." << endl;
+    cout << "Total hits processed: " << totalHitsProcessed << endl;
     
-    // Combine all thread results into a single vector
-    vector<pair<float, u_int32_t>> allWeights;
-    allWeights.reserve(totalSize);
+    // Find top 300 results using a bounded min-heap (keeps largest elements by replacing smallest)
+    const unsigned TOP_N = 300;
+    std::pair<float, u_int32_t> topResults[TOP_N];
+    size_t heapSize = 0;
     
-    // Use a map to combine weights for the same image ID
-    std::unordered_map<u_int32_t, float> combinedWeights;
-    combinedWeights.reserve(totalSize);
-    
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i) {
-        for (const auto& pair : threads[i]->weightVec) {
-            combinedWeights[pair.second] += pair.first;
+    // Process all images in a single pass
+    for (u_int32_t id = 0; id <= maxImageId; ++id) {
+        if (weights[id] > 0) {
+            if (heapSize < TOP_N) {
+                // Heap not full yet, just add the element
+                topResults[heapSize++] = {weights[id], id};
+                
+                // If we just filled the heap, heapify it once
+                if (heapSize == TOP_N) {
+                    // Build min-heap (smallest element at root)
+                    for (int i = heapSize / 2 - 1; i >= 0; i--) {
+                        siftDown(topResults, heapSize, i);
+                    }
+                }
+            } 
+            else if (weights[id] > topResults[0].first) {
+                // Heap is full and we found a larger weight
+                // Replace the smallest element (root) and sift down
+                topResults[0] = {weights[id], id};
+                siftDown(topResults, heapSize, 0);
+            }
         }
     }
     
-    // Convert the combined weights to a vector
-    allWeights.reserve(combinedWeights.size());
-    for (const auto& pair : combinedWeights) {
-        allWeights.emplace_back(pair.second, pair.first); // weight, imageId
-    }
-
-    gettimeofday(&t[4], NULL);
-    cout << "Result reduction time: " << getTimeDiff(t[3], t[4]) << " ms." << endl;
-    cout << "Total unique images found: " << allWeights.size() << endl;
-
-    // Free the memory
-    for (unsigned i = 0; i < NB_RANKING_THREAD; ++i)
-        delete threads[i];
-
-    // Use partial sort - much faster than full sort for large datasets
-    const unsigned TOP_N = 300; // Only need top 300 for reranking
-    std::partial_sort(allWeights.begin(), 
-                     allWeights.begin() + std::min(TOP_N, (unsigned)allWeights.size()),
-                     allWeights.end(),
-                     [](const std::pair<float, u_int32_t>& a, const std::pair<float, u_int32_t>& b) { 
-                         return a.first > b.first; 
-                     });
+    // Convert heap to sorted vector (descending order by weight)
+    vector<pair<float, u_int32_t>> sortedResults(topResults, topResults + heapSize);
+    std::sort(sortedResults.begin(), sortedResults.end(), 
+              [](const std::pair<float, u_int32_t>& a, const std::pair<float, u_int32_t>& b) { 
+                  return a.first > b.first; 
+              });
 
     gettimeofday(&t[5], NULL);
-    cout << "Partial sort time: " << getTimeDiff(t[4], t[5]) << " ms." << endl;
-    cout << "Reranking 300 among " << allWeights.size() << " images." << endl;
+    cout << "Top-" << TOP_N << " selection time: " << getTimeDiff(t[3], t[5]) << " ms." << endl;
+    cout << "Reranking " << sortedResults.size() << " images." << endl;
+    
+    // Debug: Print top 5 weights to verify we're getting the largest weights
+    cout << "Top 5 weights: ";
+    for (unsigned i = 0; i < std::min(5u, (unsigned)sortedResults.size()); ++i) {
+        cout << sortedResults[i].first << " (id: " << sortedResults[i].second << ") ";
+    }
+    cout << endl;
 
     // Rerank using the vector directly
-    vector<SearchResult> rerankedResults = reranker.rerank(imageReqHits, indexHits, allWeights, 300);
+    vector<SearchResult> rerankedResults = reranker.rerank(imageReqHits, indexHits, sortedResults, TOP_N);
 
     gettimeofday(&t[6], NULL);
     cout << "Reranking time: " << getTimeDiff(t[5], t[6]) << " ms." << endl;
@@ -374,6 +306,8 @@ void ORBSearcher::returnResults(vector<SearchResult> &rankedResults,
 {
     list<u_int32_t> imageIds;
 
+    cout << "Number of reranked results: " << rankedResults.size() << endl;
+    
     unsigned i_res = 0;
     for (const auto& res : rankedResults)
     {
@@ -393,6 +327,8 @@ void ORBSearcher::returnResults(vector<SearchResult> &rankedResults,
         else
             req.tags.push_back("");
     }
+    
+    cout << "Total results returned: " << i_res << endl;
 }
 
 

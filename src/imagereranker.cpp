@@ -245,7 +245,6 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
          << ", point pairs: " << totalPointPairs << endl;
     cout << "[ImageReranker] Images with histograms: " << histograms.size() 
          << ", images with point pairs: " << imgTasks.size() << endl;
-
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Create a vector to store the results

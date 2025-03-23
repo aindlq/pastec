@@ -75,9 +75,13 @@ public:
     const vector<unsigned>& getWordCountVector() const;
 
 private:
+    // Recalculate the total number of indexed images
+    void recalculateTotalIndexedImages();
+
     u_int64_t nbOccurences[NB_VISUAL_WORDS];
     u_int64_t totalNbRecords;
     bool buildForwardIndex;
+    unsigned m_totalIndexedImages; // Cached count of indexed images
 
     // Store the paths provided in the constructor
     string storedIndexPath;
