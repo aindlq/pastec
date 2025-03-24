@@ -47,19 +47,9 @@ vector<SearchResult> ImageReranker::rerank(unordered_map<u_int32_t, list<Hit> > 
                                          const vector<pair<float, u_int32_t>> &sortedResults,
                                          unsigned i_nbResults)
 {
-    struct timeval t_start, t_extract;
-    gettimeofday(&t_start, NULL);
-    
     unordered_set<u_int32_t> firstImageIds;
-
     // Extract the first i_nbResults ranked images from the vector.
-    getFirstImageIds(sortedResults, i_nbResults, firstImageIds);
-    
-    gettimeofday(&t_extract, NULL);
-    cout << "[ImageReranker] Extracted " << firstImageIds.size() << " top images from vector in " 
-         << ((t_extract.tv_sec - t_start.tv_sec) * 1000000 + (t_extract.tv_usec - t_start.tv_usec)) / 1000 
-         << " ms" << endl;
-         
+    getFirstImageIds(sortedResults, i_nbResults, firstImageIds);         
     // Continue with the common reranking logic
     return rerankCommon(imagesReqHits, indexHits, firstImageIds);
 }
@@ -95,10 +85,6 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
                                                unordered_map<u_int32_t, const vector<Hit>* > &indexHits,
                                                unordered_set<u_int32_t> &firstImageIds)
 {
-    struct timeval t_start, t_extract, t_histogram, t_threads, t_end;
-    gettimeofday(&t_start, NULL);
-    t_extract = t_start; // For timing consistency with old code
-
     // Use PointPairs instead of RANSACTask
     unordered_map<u_int32_t, PointPairs> imgPointPairs;
 
@@ -159,26 +145,11 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
         
         // Debug output removed to improve performance
     }
-    
-    gettimeofday(&t_histogram, NULL);
-    cout << "[ImageReranker] Built histograms in " 
-         << ((t_histogram.tv_sec - t_extract.tv_sec) * 1000000 + (t_histogram.tv_usec - t_extract.tv_usec)) / 1000 
-         << " ms" << endl;
-    cout << "[ImageReranker] Total matches: " << totalMatches 
-         << ", histogram entries: " << totalHistogramEntries 
-         << ", point pairs: " << totalPointPairs << endl;
-    cout << "[ImageReranker] Images with histograms: " << histograms.size() 
-         << ", images with point pairs: " << imgPointPairs.size() << endl;
 
     // Create a vector to store the results
     vector<SearchResult> rankedResults;
     rankedResults.reserve(histograms.size()); // Reserve space for efficiency
 
-    gettimeofday(&t_threads, NULL);
-    cout << "[ImageReranker] Starting RANSAC processing at " 
-         << ((t_threads.tv_sec - t_histogram.tv_sec) * 1000000 + (t_threads.tv_usec - t_histogram.tv_usec)) / 1000 
-         << " ms" << endl;
-    
     // Process all images in a single thread
     unsigned ransacAttempts = 0;
     unsigned successfulRansacs = 0;
@@ -203,15 +174,9 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
 
             if (pointPairs.points1.size() >= RANSAC_MIN_INLINERS)
             {
-                ransacAttempts++;
-                struct timeval t_ransac_start, t_ransac_end;
-                gettimeofday(&t_ransac_start, NULL);
-                
+                ransacAttempts++;                
                 Mat H = RANSACHelper::pastecEstimateRigidTransform(pointPairs.points2, pointPairs.points1, true);
-                
-                gettimeofday(&t_ransac_end, NULL);
-                unsigned long ransac_time = RANSACHelper::getTimeDiff(t_ransac_start, t_ransac_end);
-                
+
                 if (countNonZero(H) == 0) {
                     skippedDueToZeroH++;
                     continue;
@@ -221,10 +186,6 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
                 rankedResults.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
                 
                 successfulRansacs++;
-                
-                cout << "[ImageReranker] RANSAC for image " << i_imageId 
-                     << " took " << ransac_time << " ms with " 
-                     << pointPairs.points1.size() << " points, max val: " << i_maxVal << endl;
             }
             else {
                 skippedDueToFewPoints++;
@@ -234,21 +195,7 @@ vector<SearchResult> ImageReranker::rerankCommon(unordered_map<u_int32_t, list<H
             skippedDueToLowValue++;
         }
     }
-    
-    cout << "[ImageReranker] RANSAC stats: attempts: " << ransacAttempts 
-         << ", successful: " << successfulRansacs 
-         << ", skipped (low val): " << skippedDueToLowValue
-         << ", skipped (few points): " << skippedDueToFewPoints
-         << ", skipped (zero H): " << skippedDueToZeroH << endl;
-    
-    gettimeofday(&t_end, NULL);
-    cout << "[ImageReranker] RANSAC threads total time: " 
-         << ((t_end.tv_sec - t_threads.tv_sec) * 1000000 + (t_end.tv_usec - t_threads.tv_usec)) / 1000 
-         << " ms" << endl;
-    cout << "[ImageReranker] Total reranking time: " 
-         << ((t_end.tv_sec - t_start.tv_sec) * 1000000 + (t_end.tv_usec - t_start.tv_usec)) / 1000 
-         << " ms" << endl;
-    
+
     // Sort the results by weight in descending order
     sort(rankedResults.begin(), rankedResults.end(), 
          [](const SearchResult& a, const SearchResult& b) {
@@ -285,10 +232,7 @@ private:
 vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int32_t, list<Hit> > &imagesReqHits,
                                                           ORBIndex* index,
                                                           unordered_set<u_int32_t> &firstImageIds)
-{
-    struct timeval t_start, t_histogram, t_threads, t_end;
-    gettimeofday(&t_start, NULL);
-    
+{    
     // Create a map of query words for fast lookup
     unordered_map<u_int32_t, Hit> queryWords;
     for (const auto& pair : imagesReqHits) {
@@ -350,25 +294,10 @@ vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int3
         }
     }
     
-    gettimeofday(&t_histogram, NULL);
-    cout << "[ImageReranker] Built histograms using forward index in " 
-         << ((t_histogram.tv_sec - t_start.tv_sec) * 1000000 + (t_histogram.tv_usec - t_start.tv_usec)) / 1000 
-         << " ms" << endl;
-    cout << "[ImageReranker] Total matches: " << totalMatches 
-         << ", histogram entries: " << totalHistogramEntries 
-         << ", point pairs: " << totalPointPairs << endl;
-    cout << "[ImageReranker] Images with histograms: " << histograms.size() 
-         << ", images with point pairs: " << imgPointPairs.size() << endl;
-
     // Create a vector to store the results
     vector<SearchResult> rankedResults;
     rankedResults.reserve(histograms.size()); // Reserve space for efficiency
 
-    gettimeofday(&t_threads, NULL);
-    cout << "[ImageReranker] Starting RANSAC processing at " 
-         << ((t_threads.tv_sec - t_histogram.tv_sec) * 1000000 + (t_threads.tv_usec - t_histogram.tv_usec)) / 1000 
-         << " ms" << endl;
-    
     // Process all images in a single thread
     unsigned ransacAttempts = 0;
     unsigned successfulRansacs = 0;
@@ -393,15 +322,8 @@ vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int3
 
             if (pointPairs.points1.size() >= RANSAC_MIN_INLINERS)
             {
-                ransacAttempts++;
-                struct timeval t_ransac_start, t_ransac_end;
-                gettimeofday(&t_ransac_start, NULL);
-                
-                Mat H = RANSACHelper::pastecEstimateRigidTransform(pointPairs.points2, pointPairs.points1, true);
-                
-                gettimeofday(&t_ransac_end, NULL);
-                unsigned long ransac_time = RANSACHelper::getTimeDiff(t_ransac_start, t_ransac_end);
-                
+                ransacAttempts++;                
+                Mat H = RANSACHelper::pastecEstimateRigidTransform(pointPairs.points2, pointPairs.points1, true);                
                 if (countNonZero(H) == 0) {
                     skippedDueToZeroH++;
                     continue;
@@ -410,11 +332,7 @@ vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int3
                 Rect bRect1 = boundingRect(pointPairs.points1);
                 rankedResults.push_back(SearchResult(i_maxVal, i_imageId, bRect1));
                 
-                successfulRansacs++;
-                
-                cout << "[ImageReranker] RANSAC for image " << i_imageId 
-                     << " took " << ransac_time << " ms with " 
-                     << pointPairs.points1.size() << " points, max val: " << i_maxVal << endl;
+                successfulRansacs++;                
             }
             else {
                 skippedDueToFewPoints++;
@@ -424,20 +342,6 @@ vector<SearchResult> ImageReranker::rerankUsingForwardIndex(unordered_map<u_int3
             skippedDueToLowValue++;
         }
     }
-    
-    cout << "[ImageReranker] RANSAC stats: attempts: " << ransacAttempts 
-         << ", successful: " << successfulRansacs 
-         << ", skipped (low val): " << skippedDueToLowValue
-         << ", skipped (few points): " << skippedDueToFewPoints
-         << ", skipped (zero H): " << skippedDueToZeroH << endl;
-    
-    gettimeofday(&t_end, NULL);
-    cout << "[ImageReranker] RANSAC threads total time: " 
-         << ((t_end.tv_sec - t_threads.tv_sec) * 1000000 + (t_end.tv_usec - t_threads.tv_usec)) / 1000 
-         << " ms" << endl;
-    cout << "[ImageReranker] Total reranking time with forward index: " 
-         << ((t_end.tv_sec - t_start.tv_sec) * 1000000 + (t_end.tv_usec - t_start.tv_usec)) / 1000 
-         << " ms" << endl;
     
     // Sort the results by weight in descending order
     sort(rankedResults.begin(), rankedResults.end(), 

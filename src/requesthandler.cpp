@@ -154,17 +154,11 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         // Check if the content type is JSON
         if (conInfo.contentType.find("application/json") != string::npos)
         {
-            // Process as JSON with URL
-            timeval t_json_parse_start, t_json_parse_end;
-            gettimeofday(&t_json_parse_start, NULL);
-            
+            // Process as JSON with URL            
             string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
-            
-            gettimeofday(&t_json_parse_end, NULL);
-            cout << "JSON parsing time: " << getTimeDiff(t_json_parse_start, t_json_parse_end) << " ms." << endl;
-            
+                        
             if (imgDownloader->canDownloadImage(imgURL))
             {
                 std::vector<char> imgData;
@@ -294,17 +288,10 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
 
         // Check if the content type is JSON
         if (conInfo.contentType.find("application/json") != string::npos)
-        {
-            // Process as JSON with URL
-            timeval t_json_parse_start, t_json_parse_end;
-            gettimeofday(&t_json_parse_start, NULL);
-            
+        {            
             string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
-            string imgURL = data["url"].asString();
-            
-            gettimeofday(&t_json_parse_end, NULL);
-            cout << "JSON parsing time: " << getTimeDiff(t_json_parse_start, t_json_parse_end) << " ms." << endl;
+            string imgURL = data["url"].asString();            
             
             if (imgDownloader->canDownloadImage(imgURL))
             {
