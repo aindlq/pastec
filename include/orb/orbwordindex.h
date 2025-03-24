@@ -51,15 +51,25 @@ public:
 class ORBWordIndex
 {
 public:
+    // Original constructor
     ORBWordIndex(string visualWordsPath);
+    
+    // New constructor that accepts an existing words matrix
+    ORBWordIndex(const Mat* sharedWords);
+    
     ~ORBWordIndex();
+    
     void knnSearch(const Mat &query, vector<int>& indices,
                    vector<int> &dists, int knn);
+    
+    // Getter for the words matrix
+    Mat* getWords() const { return words; }
 
 private:
     bool readVisualWords(string fileName);
 
     Mat *words;  // The matrix that stores the visual words.
+    bool ownsWords; // Flag to indicate if this instance owns the words matrix
     cvflann::HierarchicalClusteringIndex<SimSIMDHamming> *kdIndex; // The kd-tree index with SimSIMD Hamming.
 };
 

@@ -23,6 +23,12 @@
 #define PASTEC_IMAGESEARCHER_H
 
 #include <queue>
+#include <memory>
+#include <future>
+#include <vector>
+
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/flann/flann.hpp>
@@ -48,16 +54,32 @@ public:
     u_int32_t searchSimilar(SearchRequest &request);
 
 private:
+    // Process a batch of keypoints
+    std::unordered_map<u_int32_t, list<Hit>> processKeyPointBatch(
+        const Mat& descriptors,
+        const vector<KeyPoint>& keypoints,
+        size_t startIdx,
+        size_t endIdx,
+        ORBWordIndex* localWordIndex);
+
     void returnResults(vector<SearchResult> &rankedResults,
                        SearchRequest &req, unsigned i_maxNbResults);
     unsigned long getTimeDiff(const timeval t1, const timeval t2) const;
     u_int32_t processSimilar(SearchRequest &request,
                              std::unordered_map<u_int32_t, list<Hit> > imageReqHits);
 
+    // Constants
+    static const int NUM_THREADS = 3;
+
+    // Original members
     ORBIndex *index;
     ORBWordIndex *wordIndex;
     ImageReranker reranker;
     Ptr<ORB> orb;
+    
+    // Thread pool members
+    std::vector<std::unique_ptr<ORBWordIndex>> threadWordIndices;
+    boost::asio::thread_pool threadPool;
 };
 
 #endif // PASTEC_IMAGESEARCHER_H

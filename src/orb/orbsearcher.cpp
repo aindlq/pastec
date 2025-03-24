@@ -40,14 +40,73 @@
 // C++17 doesn't need tr1 namespace anymore
 
 ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
-    : index(index), wordIndex(wordIndex), orb(ORB::create(2000, 1.02, 100))
+    : index(index), wordIndex(wordIndex), orb(ORB::create(2000, 1.02, 100)),
+      threadPool(NUM_THREADS)  // Initialize thread pool once
 {
     // Pre-compute word counts are already stored in the index
+    
+    // Initialize thread-specific word indices with shared words
+    for (int i = 0; i < NUM_THREADS; i++) {
+        threadWordIndices.push_back(std::make_unique<ORBWordIndex>(wordIndex->getWords()));
+    }
 }
 
 
 ORBSearcher::~ORBSearcher()
-{ }
+{
+    threadPool.join();  // Ensure all tasks complete before destruction
+}
+
+
+// Process a batch of keypoints
+std::unordered_map<u_int32_t, list<Hit>> ORBSearcher::processKeyPointBatch(
+    const Mat& descriptors,
+    const vector<KeyPoint>& keypoints,
+    size_t startIdx,
+    size_t endIdx,
+    ORBWordIndex* localWordIndex)
+{
+    const unsigned i_nbTotalIndexedImages = index->getTotalNbIndexedImages();
+    const unsigned i_maxNbOccurences = i_nbTotalIndexedImages > 10000 ?
+                                      0.15 * i_nbTotalIndexedImages
+                                      : i_nbTotalIndexedImages;
+
+    // Create a local results map for this thread
+    std::unordered_map<u_int32_t, list<Hit>> localResults;
+
+    for (unsigned i = startIdx; i < endIdx; ++i)
+    {
+        #define NB_NEIGHBORS 1
+
+        vector<int> indices(NB_NEIGHBORS);
+        vector<int> dists(NB_NEIGHBORS);
+        
+        localWordIndex->knnSearch(descriptors.row(i), indices, dists, NB_NEIGHBORS);
+
+        for (unsigned j = 0; j < indices.size(); ++j)
+        {
+            const unsigned i_wordId = indices[j];
+
+            if (index->getWordNbOccurences(i_wordId) > i_maxNbOccurences)
+                continue;
+            
+            if (localResults.find(i_wordId) == localResults.end())
+            {
+                // Convert the angle to a 16 bit integer.
+                Hit hit;
+                hit.i_imageId = 0;
+                hit.i_angle = keypoints[i].angle / 360 * (1 << 16);
+                hit.x = keypoints[i].pt.x;
+                hit.y = keypoints[i].pt.y;
+
+                localResults[i_wordId].push_back(hit);
+            }
+        }
+    }
+    
+    // Return the local results
+    return localResults;
+}
 
 
 // Helper function for sift-down operation in min-heap
@@ -75,25 +134,46 @@ static void siftDown(std::pair<float, u_int32_t>* heap, size_t size, size_t idx)
  */
 u_int32_t ORBSearcher::searchImage(SearchRequest &request)
 {
+    // Add timing at the very beginning of the function
+    timeval t_entry, t_feature_start;
+    gettimeofday(&t_entry, NULL);
+    cout << "Entering searchImage function." << endl;
+    
     timeval t[3];
-    gettimeofday(&t[0], NULL);
+    gettimeofday(&t_feature_start, NULL);
+    t[0] = t_feature_start;
 
     cout << "Loading the image and extracting the ORBs." << endl;
 
+    // Time the image loading operation
+    timeval t_load_start, t_load_end;
+    gettimeofday(&t_load_start, NULL);
+    
     Mat img;
     u_int32_t i_ret = ImageLoader::loadImage(request.imageData.size(),
                                              request.imageData.data(), img);
     if (i_ret != OK)
         return i_ret;
+        
+    gettimeofday(&t_load_end, NULL);
+    cout << "Image loading time: " << getTimeDiff(t_load_start, t_load_end) << " ms." << endl;
 
+    // Time the feature extraction operation
+    timeval t_extract_start, t_extract_end;
+    gettimeofday(&t_extract_start, NULL);
+    
     vector<KeyPoint> keypoints;
     Mat descriptors;
 
     orb->detectAndCompute(img, noArray(), keypoints, descriptors);
+    
+    gettimeofday(&t_extract_end, NULL);
+    cout << "ORB feature extraction time: " << getTimeDiff(t_extract_start, t_extract_end) << " ms." << endl;
 
     gettimeofday(&t[1], NULL);
 
     cout << "time: " << getTimeDiff(t[0], t[1]) << " ms." << endl;
+    cout << "Initial setup time (before feature extraction): " << getTimeDiff(t_entry, t_feature_start) << " ms." << endl;
     cout << "Looking for the visual words. " << endl;
 
     const unsigned i_nbTotalIndexedImages = index->getTotalNbIndexedImages();
@@ -101,39 +181,88 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
                                        0.15 * i_nbTotalIndexedImages
                                        : i_nbTotalIndexedImages;
 
+    // Time the visual word extraction loop
+    timeval t_word_start, t_word_end;
+    gettimeofday(&t_word_start, NULL);
+    
     std::unordered_map<u_int32_t, list<Hit> > imageReqHits; // key: visual word, value: the found angles
-    for (unsigned i = 0; i < keypoints.size(); ++i)
-    {
-        #define NB_NEIGHBORS 1
-
-        vector<int> indices(NB_NEIGHBORS);
-        vector<int> dists(NB_NEIGHBORS);
-        wordIndex->knnSearch(descriptors.row(i), indices,
-                           dists, NB_NEIGHBORS);
-
-        for (unsigned j = 0; j < indices.size(); ++j)
-        {
-            const unsigned i_wordId = indices[j];
-
-            if (index->getWordNbOccurences(i_wordId) > i_maxNbOccurences)
-                continue;
-
-            if (imageReqHits.find(i_wordId) == imageReqHits.end())
-            {
-                // Convert the angle to a 16 bit integer.
-                Hit hit;
-                hit.i_imageId = 0;
-                hit.i_angle = keypoints[i].angle / 360 * (1 << 16);
-                hit.x = keypoints[i].pt.x;
-                hit.y = keypoints[i].pt.y;
-
-                imageReqHits[i_wordId].push_back(hit);
+    
+    // Time the parallel knnSearch operations
+    timeval t_knn_total_start, t_knn_total_end;
+    gettimeofday(&t_knn_total_start, NULL);
+    
+    // Use the persistent thread pool
+    // boost::asio::thread_pool pool(NUM_THREADS);
+    
+    // Calculate batch size
+    size_t totalKeypoints = keypoints.size();
+    size_t batchSize = (totalKeypoints + NUM_THREADS - 1) / NUM_THREADS; // Ceiling division
+    
+    cout << "Processing " << totalKeypoints << " keypoints in " << NUM_THREADS 
+         << " threads with batch size " << batchSize << endl;
+    
+    // Create a vector to hold futures for each task
+    std::vector<std::future<std::unordered_map<u_int32_t, list<Hit>>>> futures;
+    
+    // Submit tasks to the thread pool
+    for (int t = 0; t < NUM_THREADS; t++) {
+        size_t startIdx = t * batchSize;
+        size_t endIdx = std::min(startIdx + batchSize, totalKeypoints);
+        
+        // Skip empty batches
+        if (startIdx >= totalKeypoints) {
+            continue;
+        }
+        
+        cout << "Thread " << t << " processing keypoints " << startIdx << " to " << endIdx - 1 << endl;
+        
+        // Create a packaged task that returns a results map
+        auto task = std::make_shared<std::packaged_task<std::unordered_map<u_int32_t, list<Hit>>()>>(
+            [this, &descriptors, &keypoints, startIdx, endIdx, t]() {
+                return this->processKeyPointBatch(descriptors, keypoints, startIdx, endIdx, threadWordIndices[t].get());
+            }
+        );
+        
+        // Get the future from the task
+        futures.push_back(task->get_future());
+        
+        // Submit the task to the thread pool
+        boost::asio::post(threadPool, [task]() { (*task)(); });
+    }
+    
+    // Wait for all tasks to complete and merge their results
+    for (auto& future : futures) {
+        auto threadResults = future.get();
+        
+        // Merge thread results into the final results map
+        for (auto& [wordId, hits] : threadResults) {
+            if (imageReqHits.find(wordId) == imageReqHits.end()) {
+                imageReqHits[wordId] = std::move(hits);
+            } else {
+                // If the word already exists, append the hits
+                imageReqHits[wordId].splice(imageReqHits[wordId].end(), std::move(hits));
             }
         }
     }
+    
+    // We don't join the persistent thread pool here, it will be joined in the destructor
+    // threadPool.join();
+    
+    gettimeofday(&t_knn_total_end, NULL);
+    unsigned long total_knn_time = getTimeDiff(t_knn_total_start, t_knn_total_end);
+    cout << "Total parallel knnSearch operations time: " << total_knn_time << " ms." << endl;
+    cout << "Average time per keypoint: " << (keypoints.size() > 0 ? (float)total_knn_time / keypoints.size() : 0) << " ms." << endl;
+    
+    gettimeofday(&t_word_end, NULL);
+    cout << "Visual word extraction loop time: " << getTimeDiff(t_word_start, t_word_end) << " ms." << endl;
 
     gettimeofday(&t[2], NULL);
     cout << "time: " << getTimeDiff(t[1], t[2]) << " ms." << endl;
+
+    // Add timing before calling processSimilar
+    timeval t_before_process;
+    gettimeofday(&t_before_process, NULL);
+    cout << "Time between visual word extraction and processSimilar: " << getTimeDiff(t[2], t_before_process) << " ms." << endl;
 
     return processSimilar(request, imageReqHits);
 }
@@ -172,12 +301,34 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
 
     cout << "Processing similar with " << imageReqHits.size() << " visual words in query." << endl;
 
+    // Add timing for initialization before index lookup
+    timeval t_init_start;
+    gettimeofday(&t_init_start, NULL);
+    cout << "Time between entering processSimilar and starting initialization: " << getTimeDiff(t[0], t_init_start) << " ms." << endl;
+
     const unsigned i_nbTotalIndexedImages = index->getTotalNbIndexedImages();
 
     std::unordered_map<u_int32_t, const vector<Hit>* > indexHits; // key: visual word id, values: index hits.
     indexHits.rehash(imageReqHits.size());
+    
+    // Add timing before actual index lookup
+    timeval t_before_lookup;
+    gettimeofday(&t_before_lookup, NULL);
+    cout << "Initialization time before index lookup: " << getTimeDiff(t_init_start, t_before_lookup) << " ms." << endl;
+    
+    // Time the actual index lookup operation
+    timeval t_lookup_start, t_lookup_end;
+    gettimeofday(&t_lookup_start, NULL);
+    
     index->getImagesWithVisualWords(imageReqHits, indexHits);
+    
+    gettimeofday(&t_lookup_end, NULL);
+    cout << "Actual index lookup operation time: " << getTimeDiff(t_lookup_start, t_lookup_end) << " ms." << endl;
 
+    // Time the hit counting operation
+    timeval t_count_start, t_count_end;
+    gettimeofday(&t_count_start, NULL);
+    
     // Count total hits across all visual words
     unsigned totalHits = 0;
     unsigned maxHitsPerWord = 0;
@@ -193,6 +344,9 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
         if (wordHits == 0)
             wordsWithNoHits++;
     }
+    
+    gettimeofday(&t_count_end, NULL);
+    cout << "Hit counting operation time: " << getTimeDiff(t_count_start, t_count_end) << " ms." << endl;
 
     gettimeofday(&t[1], NULL);
     cout << "Index lookup time: " << getTimeDiff(t[0], t[1]) << " ms." << endl;
@@ -214,6 +368,10 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     // Process all visual words in a single loop
     unsigned totalHitsProcessed = 0;
     
+    // Time the weight computation loop
+    timeval t_weight_loop_start, t_weight_loop_end;
+    gettimeofday(&t_weight_loop_start, NULL);
+    
     // Compute TF-IDF weights for all images
     for (auto it = indexHits.begin(); it != indexHits.end(); ++it) {
         const u_int32_t wordId = it->first;
@@ -230,10 +388,22 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
             weights[hit.i_imageId] += f_weight / i_totalNbWords;
         }
     }
+    
+    gettimeofday(&t_weight_loop_end, NULL);
+    cout << "TF-IDF weight computation loop time: " << getTimeDiff(t_weight_loop_start, t_weight_loop_end) << " ms." << endl;
 
     gettimeofday(&t[3], NULL);
     cout << "Weight computation time: " << getTimeDiff(t[2], t[3]) << " ms." << endl;
     cout << "Total hits processed: " << totalHitsProcessed << endl;
+    
+    // Add timing before top-N selection
+    timeval t_before_topn;
+    gettimeofday(&t_before_topn, NULL);
+    cout << "Time between weight computation and top-N selection: " << getTimeDiff(t[3], t_before_topn) << " ms." << endl;
+    
+    // Time the heap operations
+    timeval t_heap_start, t_heap_end, t_sort_start, t_sort_end;
+    gettimeofday(&t_heap_start, NULL);
     
     // Find top 300 results using a bounded min-heap (keeps largest elements by replacing smallest)
     const unsigned TOP_N = 300;
@@ -264,12 +434,21 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
         }
     }
     
+    gettimeofday(&t_heap_end, NULL);
+    cout << "Heap construction and maintenance time: " << getTimeDiff(t_heap_start, t_heap_end) << " ms." << endl;
+    
+    // Time the sorting operation
+    gettimeofday(&t_sort_start, NULL);
+    
     // Convert heap to sorted vector (descending order by weight)
     vector<pair<float, u_int32_t>> sortedResults(topResults, topResults + heapSize);
     std::sort(sortedResults.begin(), sortedResults.end(), 
               [](const std::pair<float, u_int32_t>& a, const std::pair<float, u_int32_t>& b) { 
                   return a.first > b.first; 
               });
+              
+    gettimeofday(&t_sort_end, NULL);
+    cout << "Sorting time: " << getTimeDiff(t_sort_start, t_sort_end) << " ms." << endl;
 
     gettimeofday(&t[5], NULL);
     cout << "Top-" << TOP_N << " selection time: " << getTimeDiff(t[3], t[5]) << " ms." << endl;
@@ -286,6 +465,10 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     vector<SearchResult> rerankedResults;
     ORBIndex* orbIndex = static_cast<ORBIndex*>(index);
     
+    // Time the reranking preparation
+    timeval t_rerank_prep_start, t_rerank_prep_end;
+    gettimeofday(&t_rerank_prep_start, NULL);
+    
     if (orbIndex->hasForwardIndex()) {
         // Get the set of image IDs to rerank
         unordered_set<u_int32_t> firstImageIds;
@@ -293,20 +476,55 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
             firstImageIds.insert(sortedResults[i].second);
         }
         
+        gettimeofday(&t_rerank_prep_end, NULL);
+        cout << "Reranking preparation time: " << getTimeDiff(t_rerank_prep_start, t_rerank_prep_end) << " ms." << endl;
+        
         cout << "Using forward index for reranking." << endl;
+        
+        // Time the actual reranking operation
+        timeval t_rerank_start, t_rerank_end;
+        gettimeofday(&t_rerank_start, NULL);
+        
         // Use the forward index reranking
         rerankedResults = reranker.rerankUsingForwardIndex(imageReqHits, orbIndex, firstImageIds);
+        
+        gettimeofday(&t_rerank_end, NULL);
+        cout << "Forward index reranking operation time: " << getTimeDiff(t_rerank_start, t_rerank_end) << " ms." << endl;
     } else {
         // Fall back to the original reranking
+        unordered_set<u_int32_t> firstImageIds;
+        for (unsigned i = 0; i < min(TOP_N, (unsigned)sortedResults.size()); i++) {
+            firstImageIds.insert(sortedResults[i].second);
+        }
+        
+        gettimeofday(&t_rerank_prep_end, NULL);
+        cout << "Reranking preparation time: " << getTimeDiff(t_rerank_prep_start, t_rerank_prep_end) << " ms." << endl;
+        
         cout << "Forward index not available, using standard reranking." << endl;
+        
+        // Time the actual reranking operation
+        timeval t_rerank_start, t_rerank_end;
+        gettimeofday(&t_rerank_start, NULL);
+        
         rerankedResults = reranker.rerank(imageReqHits, indexHits, sortedResults, TOP_N);
+        
+        gettimeofday(&t_rerank_end, NULL);
+        cout << "Standard reranking operation time: " << getTimeDiff(t_rerank_start, t_rerank_end) << " ms." << endl;
     }
 
     gettimeofday(&t[6], NULL);
     cout << "Reranking time: " << getTimeDiff(t[5], t[6]) << " ms." << endl;
     cout << "Returning the results. " << endl;
 
+    // Add timing for result preparation
+    timeval t_before_results, t_after_results;
+    gettimeofday(&t_before_results, NULL);
+    cout << "Time between reranking and result preparation: " << getTimeDiff(t[6], t_before_results) << " ms." << endl;
+    
     returnResults(rerankedResults, request, 100);
+    
+    gettimeofday(&t_after_results, NULL);
+    cout << "Result preparation time: " << getTimeDiff(t_before_results, t_after_results) << " ms." << endl;
 
     return SEARCH_RESULTS;
 }

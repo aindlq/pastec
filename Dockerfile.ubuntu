@@ -12,7 +12,8 @@ ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update \
   && apt-get install -y curl wget libcurl4-openssl-dev libopencv-dev libmicrohttpd-dev \
-     libjsoncpp-dev cmake git build-essential clang lld libmimalloc-dev ca-certificates
+     libjsoncpp-dev cmake git build-essential clang lld libmimalloc-dev ca-certificates \
+     libboost-all-dev libtbb-dev
      
 # Create app directory
 RUN mkdir -p /app

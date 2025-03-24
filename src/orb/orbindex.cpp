@@ -174,8 +174,7 @@ u_int32_t ORBIndex::addImage(unsigned i_imageId, list<HitForward> hitList)
         nbOccurences[hitFor.i_wordId]++;
         totalNbRecords++;
     }
-    // Recalculate the total number of indexed images
-    recalculateTotalIndexedImages();
+    updateIndexState();
     
     pthread_rwlock_unlock(&rwLock);
 
@@ -233,8 +232,7 @@ u_int32_t ORBIndex::addBatchImages(const unordered_map<u_int32_t, list<HitForwar
         }
     }
     
-    // Recalculate the total number of indexed images
-    recalculateTotalIndexedImages();
+    updateIndexState();
     
     pthread_rwlock_unlock(&rwLock);
     
@@ -353,10 +351,7 @@ u_int32_t ORBIndex::removeImage(const unsigned i_imageId)
             ++it;
         }
     }
-    
-    // Recalculate the total number of indexed images
-    recalculateTotalIndexedImages();
-    
+    updateIndexState();    
     pthread_rwlock_unlock(&rwLock);
 
     cout << "Image " << i_imageId << " removed." << endl;
@@ -675,9 +670,7 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
         indexAccess.close();
         delete[] wordOffSet;
         
-        // Recalculate the total number of indexed images
-        recalculateTotalIndexedImages();
-
+        updateIndexState();
         pthread_rwlock_unlock(&rwLock);
 
         i_ret = INDEX_LOADED;
@@ -859,6 +852,37 @@ void ORBIndex::unlock()
 }
 
 /**
+ * @brief Sort all word vectors by image ID.
+ * 
+ * This method sorts all word vectors by image ID to enable binary search
+ * in getHitForWordAndImage, improving lookup performance from O(n) to O(log n).
+ * Called after loading the index or modifying it (adding/removing images).
+ */
+void ORBIndex::sortAllWordVectors()
+{
+    for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId) {
+        if (nbOccurences[i_wordId] > 0) {
+            std::sort(indexHits[i_wordId].begin(), indexHits[i_wordId].end(), 
+                     [](const Hit& a, const Hit& b) {
+                         return a.i_imageId < b.i_imageId;
+                     });
+        }
+    }
+}
+
+/**
+ * @brief Update the index state by recalculating total indexed images and sorting word vectors.
+ * 
+ * This method combines recalculateTotalIndexedImages() and sortAllWordVectors() since
+ * they are always called together after modifying the index.
+ */
+void ORBIndex::updateIndexState()
+{
+    recalculateTotalIndexedImages();
+    sortAllWordVectors();
+}
+
+/**
  * @brief Get direct access to the word count vector.
  * @return A const reference to the nbWords vector.
  */
@@ -897,6 +921,10 @@ const vector<unsigned>& ORBIndex::getForwardIndexWords(u_int32_t i_imageId) cons
  * @param i_wordId the word id.
  * @param i_imageId the image id.
  * @return A pointer to the hit, or nullptr if not found.
+ * 
+ * This method uses binary search on the sorted vector of hits to find a hit
+ * for a specific word and image. This improves lookup performance from O(n) to O(log n).
+ * The vectors must be sorted by image ID using sortAllWordVectors() for this to work.
  */
 const Hit* ORBIndex::getHitForWordAndImage(u_int32_t i_wordId, u_int32_t i_imageId) const
 {
@@ -906,10 +934,14 @@ const Hit* ORBIndex::getHitForWordAndImage(u_int32_t i_wordId, u_int32_t i_image
     
     const vector<Hit>& hits = indexHits[i_wordId];
     
-    for (const Hit& hit : hits) {
-        if (hit.i_imageId == i_imageId) {
-            return &hit;
-        }
+    // Use binary search on the sorted vector
+    auto it = std::lower_bound(hits.begin(), hits.end(), i_imageId, 
+                              [](const Hit& hit, u_int32_t id) { 
+                                  return hit.i_imageId < id; 
+                              });
+    
+    if (it != hits.end() && it->i_imageId == i_imageId) {
+        return &(*it);
     }
     
     return nullptr;

@@ -23,7 +23,7 @@ if(TARGET simsimd)
 endif()
 
 # Include directories
-include_directories(include include/orb include/pastec)
+include_directories(include include/orb include/pastec ${Boost_INCLUDE_DIRS})
 
 # Define library sources (core functionality)
 set(PASTEC_LIB_SOURCES
@@ -104,6 +104,7 @@ option(INSTALL_TARGETS "Install targets and generate package files" ON)
 find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(CURL REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
 find_package(mimalloc)
 
 # Only need microhttpd for the executable
@@ -117,7 +118,7 @@ if(BUILD_PASTEC_LIB)
     target_include_directories(pastec PUBLIC 
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
-    target_link_libraries(pastec ${CMAKE_THREAD_LIBS_INIT} ${OpenCV_LIBS} ${CURL_LIBRARIES} simsimd)
+    target_link_libraries(pastec ${CMAKE_THREAD_LIBS_INIT} ${OpenCV_LIBS} ${CURL_LIBRARIES} ${Boost_LIBRARIES} simsimd)
     
     # Link mimalloc if found
     if(MIMALLOC_FOUND)
@@ -148,11 +149,11 @@ if(BUILD_PASTEC_EXE)
     
     if(BUILD_PASTEC_LIB)
         # Link against the library if we're building it
-        target_link_libraries(pastec_server pastec ${LIBMICROHTTPD_LIBRARY})
+        target_link_libraries(pastec_server pastec ${LIBMICROHTTPD_LIBRARY} ${Boost_LIBRARIES})
     else()
         # Otherwise, include all sources directly
         target_sources(pastec_server PRIVATE ${PASTEC_LIB_SOURCES})
-        target_link_libraries(pastec_server ${CMAKE_THREAD_LIBS_INIT} ${OpenCV_LIBS} ${CURL_LIBRARIES} ${LIBMICROHTTPD_LIBRARY} simsimd)
+        target_link_libraries(pastec_server ${CMAKE_THREAD_LIBS_INIT} ${OpenCV_LIBS} ${CURL_LIBRARIES} ${LIBMICROHTTPD_LIBRARY} ${Boost_LIBRARIES} simsimd)
     endif()
     
     # Link mimalloc if found

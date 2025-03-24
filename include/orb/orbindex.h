@@ -86,6 +86,13 @@ public:
 private:
     // Recalculate the total number of indexed images
     void recalculateTotalIndexedImages();
+    
+    // Sort all word vectors by image ID to enable binary search in getHitForWordAndImage
+    // This improves lookup performance from O(n) to O(log n)
+    void sortAllWordVectors();
+    
+    // Update the index state by recalculating total indexed images and sorting word vectors
+    void updateIndexState();
 
     u_int64_t nbOccurences[NB_VISUAL_WORDS];
     u_int64_t totalNbRecords;

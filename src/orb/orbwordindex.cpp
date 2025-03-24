@@ -26,6 +26,7 @@
 
 
 ORBWordIndex::ORBWordIndex(string visualWordsPath)
+    : ownsWords(true)
 {
     words = new Mat(0, 32, CV_8U); // The matrix that stores the visual words.
 
@@ -47,11 +48,36 @@ ORBWordIndex::ORBWordIndex(string visualWordsPath)
     kdIndex->buildIndex();
 }
 
+// New constructor that accepts an existing words matrix
+ORBWordIndex::ORBWordIndex(const Mat* sharedWords)
+    : ownsWords(false)
+{
+    // Use the shared words matrix
+    words = const_cast<Mat*>(sharedWords);
+    
+    cout << "Building the word index with shared words." << endl;
+    
+    // Initialize SimSIMD for optimal performance
+    simsimd_flush_denormals();
+    
+    cvflann::Matrix<unsigned char> m_features
+            ((unsigned char*)words->ptr<unsigned char>(0), words->rows, words->cols);
+    
+    // Use our custom SimSIMD Hamming distance functor
+    kdIndex = new cvflann::HierarchicalClusteringIndex<SimSIMDHamming>
+            (m_features, cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_RANDOM, 8, 100));
+    kdIndex->buildIndex();
+}
+
 
 ORBWordIndex::~ORBWordIndex()
 {
-    delete words;
     delete kdIndex;
+    
+    // Only delete words if this instance owns it
+    if (ownsWords) {
+        delete words;
+    }
 }
 
 

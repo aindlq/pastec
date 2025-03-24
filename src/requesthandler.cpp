@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <memory>
 #include <sstream>
+#include <sys/time.h>
 
 #include <json/json.h>
 
@@ -154,9 +155,15 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         if (conInfo.contentType.find("application/json") != string::npos)
         {
             // Process as JSON with URL
+            timeval t_json_parse_start, t_json_parse_end;
+            gettimeofday(&t_json_parse_start, NULL);
+            
             string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
+            
+            gettimeofday(&t_json_parse_end, NULL);
+            cout << "JSON parsing time: " << getTimeDiff(t_json_parse_start, t_json_parse_end) << " ms." << endl;
             
             if (imgDownloader->canDownloadImage(imgURL))
             {
@@ -278,6 +285,9 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
     else if (testURIWithPattern(parsedURI, p_searchImage)
             && conInfo.connectionType == POST)
     {
+        timeval t_start, t_end;
+        gettimeofday(&t_start, NULL);
+        
         SearchRequest req;
         req.client = NULL;
         u_int32_t i_ret;
@@ -286,19 +296,42 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         if (conInfo.contentType.find("application/json") != string::npos)
         {
             // Process as JSON with URL
+            timeval t_json_parse_start, t_json_parse_end;
+            gettimeofday(&t_json_parse_start, NULL);
+            
             string dataStr(conInfo.uploadedData.begin(), conInfo.uploadedData.end());
             Json::Value data = StringToJson(dataStr);
             string imgURL = data["url"].asString();
+            
+            gettimeofday(&t_json_parse_end, NULL);
+            cout << "JSON parsing time: " << getTimeDiff(t_json_parse_start, t_json_parse_end) << " ms." << endl;
             
             if (imgDownloader->canDownloadImage(imgURL))
             {
                 std::vector<char> imgData;
                 long HTTPResponseCode;
+                
+                // Add timing for the image download
+                timeval t_download_start, t_download_end;
+                gettimeofday(&t_download_start, NULL);
+                
                 i_ret = imgDownloader->getImageData(imgURL, imgData, HTTPResponseCode);
+                
+                gettimeofday(&t_download_end, NULL);
+                cout << "Image download time: " << getTimeDiff(t_download_start, t_download_end) << " ms." << endl;
+                
                 if (i_ret == OK)
                 {
                     req.imageData = imgData;
+                    
+                    // Add timing for the search call
+                    timeval t_search_start, t_search_end;
+                    gettimeofday(&t_search_start, NULL);
+                    
                     i_ret = imageSearcher->searchImage(req);
+                    
+                    gettimeofday(&t_search_end, NULL);
+                    cout << "Search function call time: " << getTimeDiff(t_search_start, t_search_end) << " ms." << endl;
                 }
                 else {
                     ret["type"] = Converter::codeToString(i_ret);
@@ -316,7 +349,15 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
         {
             // Process as direct image upload
             req.imageData = conInfo.uploadedData;
+            
+            // Add timing for the search call
+            timeval t_search_start, t_search_end;
+            gettimeofday(&t_search_start, NULL);
+            
             i_ret = imageSearcher->searchImage(req);
+            
+            gettimeofday(&t_search_end, NULL);
+            cout << "Search function call time: " << getTimeDiff(t_search_start, t_search_end) << " ms." << endl;
         }
 
         ret["type"] = Converter::codeToString(i_ret);
@@ -357,12 +398,18 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
             }
             ret["results"] = results;
         }
+        
+        gettimeofday(&t_end, NULL);
+        cout << "Total search request processing time: " << getTimeDiff(t_start, t_end) << " ms." << endl;
     }
 
     // And this is the updated similar search handler
     else if (testURIWithPattern(parsedURI, p_image)
             && conInfo.connectionType == GET)
     {
+        timeval t_start, t_end;
+        gettimeofday(&t_start, NULL);
+        
         SearchRequest req;
         req.imageId = atoi(parsedURI[2].c_str());
         req.client = NULL;
@@ -407,6 +454,9 @@ void RequestHandler::handleRequest(ConnectionInfo &conInfo)
             }
             ret["results"] = results;
         }
+        
+        gettimeofday(&t_end, NULL);
+        cout << "Total similar search request processing time: " << getTimeDiff(t_start, t_end) << " ms." << endl;
     }
     else if (testURIWithPattern(parsedURI, p_ioIndex)
              && conInfo.connectionType == POST)
@@ -501,4 +551,17 @@ Json::Value RequestHandler::StringToJson(string inputStr)
     ss.str(inputStr);
     Json::parseFromStream(builder, ss, &data, &errs);
     return data;
+}
+
+
+/**
+ * @brief Get the time difference in ms between two instants.
+ * @param t1 the start time
+ * @param t2 the end time
+ * @return the time difference in milliseconds
+ */
+unsigned long RequestHandler::getTimeDiff(const timeval t1, const timeval t2) const
+{
+    return ((t2.tv_sec - t1.tv_sec) * 1000000
+            + (t2.tv_usec - t1.tv_usec)) / 1000;
 }

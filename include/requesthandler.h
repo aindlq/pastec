@@ -51,6 +51,7 @@ private:
     bool testURIWithPattern(vector<string> parsedURI, string p_pattern[]);
     string JsonToString(Json::Value data);
     Json::Value StringToJson(string str);
+    unsigned long getTimeDiff(const timeval t1, const timeval t2) const;
 
     FeatureExtractor *featureExtractor;
     Searcher *imageSearcher;
