@@ -32,7 +32,6 @@
 
 #include <opencv2/core/core.hpp>
 
-#include <thread.h>
 #include <searchResult.h>
 #include <hit.h>
 

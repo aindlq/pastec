@@ -62,6 +62,13 @@ private:
         size_t endIdx,
         ORBWordIndex* localWordIndex);
 
+    // Helper method to process a batch of words for TF-IDF computation
+    vector<float> processTFIDFBatch(
+        const vector<pair<u_int32_t, const vector<Hit>*>>& batch,
+        const vector<unsigned>& wordCounts,
+        unsigned i_nbTotalIndexedImages,
+        unsigned maxImageId);
+
     void returnResults(vector<SearchResult> &rankedResults,
                        SearchRequest &req, unsigned i_maxNbResults);
     unsigned long getTimeDiff(const timeval t1, const timeval t2) const;
@@ -69,7 +76,9 @@ private:
                              std::unordered_map<u_int32_t, list<Hit> > imageReqHits);
 
     // Constants
-    static const int NUM_THREADS = 3;
+    static const int NUM_THREADS = 20;          // Increased from 3
+    static const int FEATURE_BATCH_COUNT = 4;   // Number of batches for feature extraction
+    static const int WEIGHT_BATCH_COUNT = 8;    // Number of batches for TF-IDF computation
 
     // Original members
     ORBIndex *index;

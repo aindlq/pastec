@@ -565,118 +565,132 @@ u_int32_t ORBIndex::clear()
  */
 u_int32_t ORBIndex::load(string backwardIndexPath)
 {
-    u_int32_t i_ret;
-
-    // Open the file.
-    BackwardIndexReaderFileAccess indexAccess;
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+    
+    cout << "Loading index from " << backwardIndexPath << endl;
+    
+    // Open the file using memory mapping for optimal performance
+    BackwardIndexReaderMMapAccess indexAccess;
     if (!indexAccess.open(backwardIndexPath))
     {
         cout << "Could not open the backward index file." << endl;
-        i_ret = INDEX_NOT_FOUND;
+        return INDEX_NOT_FOUND;
     }
-    else
-    {
-        clear();
-
-        pthread_rwlock_wrlock(&rwLock);
-
-        /* Read the table to know where are located the lines corresponding to each
-         * visual word. */
-        cout << "Reading the numbers of occurences." << endl;
-        u_int64_t *wordOffSet = new u_int64_t[NB_VISUAL_WORDS];
-        u_int64_t i_offset = NB_VISUAL_WORDS * sizeof(u_int64_t);
-        for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i)
-        {
-            indexAccess.read((char *)(nbOccurences + i), sizeof(u_int64_t));
-            wordOffSet[i] = i_offset;
-            i_offset += nbOccurences[i] * BACKWARD_INDEX_ENTRY_SIZE;
+    
+    clear();
+    pthread_rwlock_wrlock(&rwLock);
+    
+    // Get direct pointer to the mapped data
+    char* mappedData = indexAccess.getDataPtr(0);
+    u_int64_t fileSize = indexAccess.getFileSize();
+    
+    cout << "File size: " << fileSize / (1024 * 1024) << " MB" << endl;
+    
+    // Read the occurrence counts (first part of the file)
+    cout << "Reading occurrence counts..." << endl;
+    memcpy(nbOccurences, mappedData, NB_VISUAL_WORDS * sizeof(u_int64_t));
+    
+    // Calculate total number of hits and prepare for single-pass processing
+    u_int64_t totalHits = 0;
+    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i) {
+        totalHits += nbOccurences[i];
+    }
+    
+    cout << "Total hits: " << totalHits << endl;
+    totalNbRecords = totalHits;
+    
+    // Pre-allocate memory for all hits
+    cout << "Pre-allocating memory for hits..." << endl;
+    for (unsigned i = 0; i < NB_VISUAL_WORDS; ++i) {
+        if (nbOccurences[i] > 0) {
+            indexHits[i].reserve(nbOccurences[i]);
         }
-
-        /* First pass: find maximum image ID. */
-        cout << "Finding maximum image ID." << endl;
-        u_int32_t maxImageId = 0;
-        while (true)
-        {
-            u_int32_t i_imageId;
-            u_int16_t i_angle, x, y;
-            indexAccess.read((char *)&i_imageId, sizeof(u_int32_t));
-            if (indexAccess.endOfIndex())
+    }
+    
+    // Process all hits in a single pass
+    cout << "Processing hits in a single pass..." << endl;
+    
+    // Start after the occurrence counts
+    char* dataPtr = mappedData + NB_VISUAL_WORDS * sizeof(u_int64_t);
+    u_int32_t maxImageId = 0;
+    
+    // Create a vector to count hits per word ID (to ensure we don't exceed nbOccurences)
+    vector<u_int64_t> hitCounts(NB_VISUAL_WORDS, 0);
+    
+    // Process all hits
+    for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId) {
+        for (u_int64_t i = 0; i < nbOccurences[i_wordId]; ++i) {
+            // Direct struct access instead of individual reads
+            Hit hit;
+            memcpy(&hit.i_imageId, dataPtr, sizeof(u_int32_t));
+            dataPtr += sizeof(u_int32_t);
+            memcpy(&hit.i_angle, dataPtr, sizeof(u_int16_t));
+            dataPtr += sizeof(u_int16_t);
+            memcpy(&hit.x, dataPtr, sizeof(u_int16_t));
+            dataPtr += sizeof(u_int16_t);
+            memcpy(&hit.y, dataPtr, sizeof(u_int16_t));
+            dataPtr += sizeof(u_int16_t);
+            
+            // Update max image ID
+            maxImageId = std::max(maxImageId, hit.i_imageId);
+            
+            // Add hit to index
+            indexHits[i_wordId].push_back(hit);
+            hitCounts[i_wordId]++;
+            
+            // Ensure we don't exceed the array bounds
+            if (dataPtr - mappedData >= fileSize) {
+                cout << "Warning: Reached end of file before processing all expected hits" << endl;
                 break;
-            indexAccess.read((char *)&i_angle, sizeof(u_int16_t));
-            indexAccess.read((char *)&x, sizeof(u_int16_t));
-            indexAccess.read((char *)&y, sizeof(u_int16_t));
-            maxImageId = std::max(maxImageId, i_imageId);
-        }
-        
-        // Ensure vectors have sufficient capacity
-        nbWords.resize(maxImageId + 1, 0);
-        if (buildForwardIndex)
-        {
-            forwardIndex.resize(maxImageId + 1);
-        }
-        
-        /* Second pass: count the number of words per image. */
-        cout << "Counting the number of words per image." << endl;
-        indexAccess.reset();
-        indexAccess.moveAt(NB_VISUAL_WORDS * sizeof(u_int64_t)); // Skip nbOccurences
-        
-        totalNbRecords = 0;
-        while (true)
-        {
-            u_int32_t i_imageId;
-            u_int16_t i_angle, x, y;
-            indexAccess.read((char *)&i_imageId, sizeof(u_int32_t));
-            if (indexAccess.endOfIndex())
-                break;
-            indexAccess.read((char *)&i_angle, sizeof(u_int16_t));
-            indexAccess.read((char *)&x, sizeof(u_int16_t));
-            indexAccess.read((char *)&y, sizeof(u_int16_t));
-            nbWords[i_imageId]++;
-            totalNbRecords++;
-        }
-
-        indexAccess.reset();
-
-        cout << "Loading the index in memory." << endl;
-
-        for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId)
-        {
-            indexAccess.moveAt(wordOffSet[i_wordId]);
-            vector<Hit> &hits = indexHits[i_wordId];
-
-            const unsigned i_nbOccurences = nbOccurences[i_wordId];
-            hits.resize(i_nbOccurences);
-
-            for (u_int64_t i = 0; i < i_nbOccurences; ++i)
-            {
-                u_int32_t i_imageId;
-                u_int16_t i_angle, x, y;
-                indexAccess.read((char *)&i_imageId, sizeof(u_int32_t));
-                indexAccess.read((char *)&i_angle, sizeof(u_int16_t));
-                indexAccess.read((char *)&x, sizeof(u_int16_t));
-                indexAccess.read((char *)&y, sizeof(u_int16_t));
-                hits[i].i_imageId = i_imageId;
-                hits[i].i_angle = i_angle;
-                hits[i].x = x;
-                hits[i].y = y;
-
-                if (buildForwardIndex)
-                {
-                    forwardIndex[i_imageId].push_back(i_wordId);
-                }
             }
         }
-
-        indexAccess.close();
-        delete[] wordOffSet;
         
-        updateIndexState();
-        pthread_rwlock_unlock(&rwLock);
-
-        i_ret = INDEX_LOADED;
+        // Verify we read the expected number of hits
+        if (hitCounts[i_wordId] != nbOccurences[i_wordId]) {
+            cout << "Warning: Expected " << nbOccurences[i_wordId] << " hits for word " 
+                 << i_wordId << " but read " << hitCounts[i_wordId] << endl;
+        }
     }
-
-    return i_ret;
+    
+    cout << "Maximum image ID: " << maxImageId << endl;
+    
+    // Resize vectors based on max image ID
+    nbWords.resize(maxImageId + 1, 0);
+    if (buildForwardIndex) {
+        forwardIndex.resize(maxImageId + 1);
+    }
+    
+    // Count words per image and build forward index in a single pass
+    cout << "Counting words per image and building forward index..." << endl;
+    for (unsigned i_wordId = 0; i_wordId < NB_VISUAL_WORDS; ++i_wordId) {
+        const vector<Hit>& hits = indexHits[i_wordId];
+        for (const Hit& hit : hits) {
+            // Count words per image
+            nbWords[hit.i_imageId]++;
+            
+            // Build forward index if needed
+            if (buildForwardIndex) {
+                forwardIndex[hit.i_imageId].push_back(i_wordId);
+            }
+        }
+    }
+    
+    // Close the memory-mapped file
+    indexAccess.close();
+    
+    // Update index state (recalculate total indexed images and sort word vectors)
+    updateIndexState();
+    
+    pthread_rwlock_unlock(&rwLock);
+    
+    gettimeofday(&end, NULL);
+    double elapsed = (end.tv_sec - start.tv_sec) + 
+                    (end.tv_usec - start.tv_usec) / 1000000.0;
+    
+    cout << "Index loaded in " << elapsed << " seconds." << endl;
+    
+    return INDEX_LOADED;
 }
 
 
@@ -687,66 +701,119 @@ u_int32_t ORBIndex::load(string backwardIndexPath)
  */
 u_int32_t ORBIndex::loadTags(string indexTagsPath)
 {
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+    
     if (indexTagsPath == "")
         indexTagsPath = DEFAULT_INDEX_TAGS_PATH;
 
-    ifstream ifs;
-
-    ifs.open(indexTagsPath.c_str(), ios_base::binary);
-    if (!ifs.good())
+    cout << "Loading tags from " << indexTagsPath << endl;
+    
+    // Try to open the file using memory mapping
+    int fd = ::open(indexTagsPath.c_str(), O_RDONLY);
+    if (fd == -1)
     {
         cout << "Could not open the index tags file." << endl;
         return INDEX_TAGS_NOT_FOUND;
     }
-
-    pthread_rwlock_wrlock(&rwLock);
-
-    // First pass: find maximum image ID
-    u_int32_t maxImageId = 0;
-    ifstream firstPassIfs(indexTagsPath.c_str(), ios_base::binary);
     
-    while (true)
+    // Get file size
+    struct stat sb;
+    if (fstat(fd, &sb) == -1)
     {
-        u_int32_t i_imageId;
-        firstPassIfs.read((char *)&i_imageId, sizeof(u_int32_t));
-        if (firstPassIfs.eof())
-            break;
-            
-        // Skip tag size and tag content
-        u_int32_t i_tagSize;
-        firstPassIfs.read((char *)&i_tagSize, sizeof(u_int32_t));
-        firstPassIfs.seekg(i_tagSize, ios_base::cur);
-        
-        maxImageId = std::max(maxImageId, i_imageId);
+        cout << "Could not get file size." << endl;
+        ::close(fd);
+        return INDEX_TAGS_NOT_FOUND;
     }
     
-    firstPassIfs.close();
+    u_int64_t fileSize = sb.st_size;
+    if (fileSize == 0)
+    {
+        cout << "Tags file is empty." << endl;
+        ::close(fd);
+        return INDEX_TAGS_LOADED; // Empty file is not an error
+    }
+    
+    // Map the file into memory
+    void* mappedData = mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mappedData == MAP_FAILED)
+    {
+        cout << "Could not memory map the tags file." << endl;
+        ::close(fd);
+        return INDEX_TAGS_NOT_FOUND;
+    }
+    
+    // Advise the kernel that we'll access the data sequentially
+    madvise(mappedData, fileSize, MADV_SEQUENTIAL);
+    
+    pthread_rwlock_wrlock(&rwLock);
+    
+    // First pass: find maximum image ID
+    char* dataPtr = static_cast<char*>(mappedData);
+    char* endPtr = dataPtr + fileSize;
+    u_int32_t maxImageId = 0;
+    
+    while (dataPtr < endPtr - sizeof(u_int32_t) * 2) // Need at least space for imageId and tagSize
+    {
+        u_int32_t i_imageId;
+        memcpy(&i_imageId, dataPtr, sizeof(u_int32_t));
+        dataPtr += sizeof(u_int32_t);
+        
+        u_int32_t i_tagSize;
+        memcpy(&i_tagSize, dataPtr, sizeof(u_int32_t));
+        dataPtr += sizeof(u_int32_t);
+        
+        // Skip tag content
+        dataPtr += i_tagSize;
+        
+        maxImageId = std::max(maxImageId, i_imageId);
+        
+        // Check if we've reached the end of the file
+        if (dataPtr >= endPtr)
+            break;
+    }
+    
+    cout << "Maximum tag image ID: " << maxImageId << endl;
     
     // Ensure tags vector has sufficient capacity
     tags.resize(maxImageId + 1);
     
     // Second pass: load the actual tags
-    ifs.clear();
-    ifs.seekg(0, ios_base::beg);
+    dataPtr = static_cast<char*>(mappedData);
     
-    while (true)
+    while (dataPtr < endPtr - sizeof(u_int32_t) * 2)
     {
-        // Read the image tag.
         u_int32_t i_imageId;
+        memcpy(&i_imageId, dataPtr, sizeof(u_int32_t));
+        dataPtr += sizeof(u_int32_t);
+        
         u_int32_t i_tagSize;
-        ifs.read((char *)&i_imageId, sizeof(u_int32_t));
-        if (ifs.eof())
+        memcpy(&i_tagSize, dataPtr, sizeof(u_int32_t));
+        dataPtr += sizeof(u_int32_t);
+        
+        // Read tag content
+        if (dataPtr + i_tagSize <= endPtr) {
+            tags[i_imageId] = string(dataPtr, i_tagSize - 1); // Subtract 1 to exclude null terminator
+        } else {
+            cout << "Warning: Tag data for image " << i_imageId << " extends beyond file end" << endl;
             break;
-        ifs.read((char *)&i_tagSize, sizeof(u_int32_t));
-        char psz_tag[i_tagSize];
-        ifs.read((char *)psz_tag, i_tagSize);
-
-        // Save it into the memory.
-        tags[i_imageId] = string(psz_tag);
+        }
+        
+        dataPtr += i_tagSize;
     }
-
+    
+    // Unmap and close the file
+    munmap(mappedData, fileSize);
+    ::close(fd);
+    
     pthread_rwlock_unlock(&rwLock);
-
+    
+    gettimeofday(&end, NULL);
+    double elapsed = (end.tv_sec - start.tv_sec) + 
+                    (end.tv_usec - start.tv_usec) / 1000000.0;
+    
+    cout << "Tags loaded in " << elapsed << " seconds." << endl;
+    
     return INDEX_TAGS_LOADED;
 }
 

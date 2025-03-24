@@ -52,6 +52,43 @@ ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
 }
 
 
+/**
+ * @brief Process a batch of words for TF-IDF computation
+ * @param batch The batch of words to process
+ * @param wordCounts Vector of word counts per image
+ * @param i_nbTotalIndexedImages Total number of indexed images
+ * @param maxImageId Maximum image ID
+ * @return Vector of weights for each image
+ */
+vector<float> ORBSearcher::processTFIDFBatch(
+    const vector<pair<u_int32_t, const vector<Hit>*>>& batch,
+    const vector<unsigned>& wordCounts,
+    unsigned i_nbTotalIndexedImages,
+    unsigned maxImageId)
+{
+    // Create a local weights vector for this batch
+    vector<float> batchWeights(maxImageId + 1, 0.0f);
+    
+    // Process each word in the batch
+    for (const auto& wordPair : batch) {
+        const u_int32_t wordId = wordPair.first;
+        const vector<Hit>* hits = wordPair.second;
+        
+        // Calculate IDF weight for this word
+        const float f_weight = log((float)i_nbTotalIndexedImages / hits->size());
+        
+        // Update weights for all images containing this word
+        for (const Hit& hit : *hits) {
+            // TF-IDF calculation
+            unsigned i_totalNbWords = wordCounts[hit.i_imageId];
+            batchWeights[hit.i_imageId] += f_weight / i_totalNbWords;
+        }
+    }
+    
+    return batchWeights;
+}
+
+
 ORBSearcher::~ORBSearcher()
 {
     threadPool.join();  // Ensure all tasks complete before destruction
@@ -194,19 +231,19 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
     // Use the persistent thread pool
     // boost::asio::thread_pool pool(NUM_THREADS);
     
-    // Calculate batch size
+    // Calculate batch size based on FEATURE_BATCH_COUNT
     size_t totalKeypoints = keypoints.size();
-    size_t batchSize = (totalKeypoints + NUM_THREADS - 1) / NUM_THREADS; // Ceiling division
+    size_t batchSize = (totalKeypoints + FEATURE_BATCH_COUNT - 1) / FEATURE_BATCH_COUNT; // Ceiling division
     
-    cout << "Processing " << totalKeypoints << " keypoints in " << NUM_THREADS 
-         << " threads with batch size " << batchSize << endl;
+    cout << "Processing " << totalKeypoints << " keypoints in " << FEATURE_BATCH_COUNT 
+         << " batches with batch size " << batchSize << endl;
     
     // Create a vector to hold futures for each task
     std::vector<std::future<std::unordered_map<u_int32_t, list<Hit>>>> futures;
     
     // Submit tasks to the thread pool
-    for (int t = 0; t < NUM_THREADS; t++) {
-        size_t startIdx = t * batchSize;
+    for (int b = 0; b < FEATURE_BATCH_COUNT; b++) {
+        size_t startIdx = b * batchSize;
         size_t endIdx = std::min(startIdx + batchSize, totalKeypoints);
         
         // Skip empty batches
@@ -214,12 +251,12 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
             continue;
         }
         
-        cout << "Thread " << t << " processing keypoints " << startIdx << " to " << endIdx - 1 << endl;
+        cout << "Batch " << b << " processing keypoints " << startIdx << " to " << endIdx - 1 << endl;
         
         // Create a packaged task that returns a results map
         auto task = std::make_shared<std::packaged_task<std::unordered_map<u_int32_t, list<Hit>>()>>(
-            [this, &descriptors, &keypoints, startIdx, endIdx, t]() {
-                return this->processKeyPointBatch(descriptors, keypoints, startIdx, endIdx, threadWordIndices[t].get());
+            [this, &descriptors, &keypoints, startIdx, endIdx, b]() {
+                return this->processKeyPointBatch(descriptors, keypoints, startIdx, endIdx, threadWordIndices[b % NUM_THREADS].get());
             }
         );
         
@@ -365,32 +402,76 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
     // Create a pre-allocated array for direct indexing of weights
     vector<float> weights(maxImageId + 1, 0.0f);
     
-    // Process all visual words in a single loop
+    // Process all visual words in parallel
     unsigned totalHitsProcessed = 0;
     
     // Time the weight computation loop
     timeval t_weight_loop_start, t_weight_loop_end;
     gettimeofday(&t_weight_loop_start, NULL);
     
-    // Compute TF-IDF weights for all images
-    for (auto it = indexHits.begin(); it != indexHits.end(); ++it) {
-        const u_int32_t wordId = it->first;
-        const vector<Hit>* hits = it->second;
-        totalHitsProcessed += hits->size();
+    // Convert the map to a vector for easier batch division
+    vector<pair<u_int32_t, const vector<Hit>*>> wordPairs;
+    wordPairs.reserve(indexHits.size());
+    
+    for (const auto& pair : indexHits) {
+        wordPairs.push_back({pair.first, pair.second});
+        totalHitsProcessed += pair.second->size();
+    }
+    
+    // Calculate batch size based on WEIGHT_BATCH_COUNT
+    size_t totalWords = wordPairs.size();
+    size_t batchSize = (totalWords + WEIGHT_BATCH_COUNT - 1) / WEIGHT_BATCH_COUNT; // Ceiling division
+    
+    cout << "Processing " << totalWords << " words in " << WEIGHT_BATCH_COUNT 
+         << " batches with batch size " << batchSize << endl;
+    
+    // Create a vector to hold futures for each task
+    std::vector<std::future<vector<float>>> futures;
+    
+    // Submit tasks to the thread pool
+    for (int b = 0; b < WEIGHT_BATCH_COUNT; b++) {
+        size_t startIdx = b * batchSize;
+        size_t endIdx = std::min(startIdx + batchSize, totalWords);
         
-        // Calculate IDF weight for this word
-        const float f_weight = log((float)i_nbTotalIndexedImages / hits->size());
+        // Skip empty batches
+        if (startIdx >= totalWords) {
+            continue;
+        }
         
-        // Update weights for all images containing this word
-        for (const Hit& hit : *hits) {
-            // TF-IDF calculation
-            unsigned i_totalNbWords = wordCounts[hit.i_imageId];
-            weights[hit.i_imageId] += f_weight / i_totalNbWords;
+        cout << "Batch " << b << " processing words " << startIdx << " to " << endIdx - 1 << endl;
+        
+        // Create the batch
+        vector<pair<u_int32_t, const vector<Hit>*>> batch(
+            wordPairs.begin() + startIdx,
+            wordPairs.begin() + endIdx
+        );
+        
+        // Create a packaged task that returns a weights vector
+        auto task = std::make_shared<std::packaged_task<vector<float>()>>(
+            [this, batch, &wordCounts, i_nbTotalIndexedImages, maxImageId]() {
+                return this->processTFIDFBatch(batch, wordCounts, i_nbTotalIndexedImages, maxImageId);
+            }
+        );
+        
+        // Get the future from the task
+        futures.push_back(task->get_future());
+        
+        // Submit the task to the thread pool
+        boost::asio::post(threadPool, [task]() { (*task)(); });
+    }
+    
+    // Wait for all tasks to complete and merge their results
+    for (auto& future : futures) {
+        auto batchWeights = future.get();
+        
+        // Merge batch weights into the final weights vector
+        for (u_int32_t id = 0; id <= maxImageId; ++id) {
+            weights[id] += batchWeights[id];
         }
     }
     
     gettimeofday(&t_weight_loop_end, NULL);
-    cout << "TF-IDF weight computation loop time: " << getTimeDiff(t_weight_loop_start, t_weight_loop_end) << " ms." << endl;
+    cout << "Parallel TF-IDF weight computation time: " << getTimeDiff(t_weight_loop_start, t_weight_loop_end) << " ms." << endl;
 
     gettimeofday(&t[3], NULL);
     cout << "Weight computation time: " << getTimeDiff(t[2], t[3]) << " ms." << endl;
