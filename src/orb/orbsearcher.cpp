@@ -50,9 +50,10 @@ ORBSearcher::ORBSearcher(ORBIndex *index, ORBWordIndex *wordIndex)
 {
     // Pre-compute word counts are already stored in the index
     
-    // Initialize thread-specific word indices with shared words
+    // Initialize thread-specific word indices with deep copies of words
     for (int i = 0; i < NUM_THREADS; i++) {
-        threadWordIndices.push_back(std::make_unique<ORBWordIndex>(wordIndex->getWords()));
+        // Use the constructor that creates a deep copy of the words matrix
+        threadWordIndices.push_back(std::make_unique<ORBWordIndex>(*wordIndex->getWords()));
     }
 }
 
@@ -101,7 +102,7 @@ ORBSearcher::~ORBSearcher()
 
 
 // Process a batch of keypoints
-std::unordered_map<u_int32_t, list<Hit>> ORBSearcher::processKeyPointBatch(
+std::vector<std::pair<u_int32_t, SearchHit>> ORBSearcher::processKeyPointBatch(
     const Mat& descriptors,
     const vector<KeyPoint>& keypoints,
     size_t startIdx,
@@ -113,8 +114,9 @@ std::unordered_map<u_int32_t, list<Hit>> ORBSearcher::processKeyPointBatch(
                                       0.15 * i_nbTotalIndexedImages
                                       : i_nbTotalIndexedImages;
 
-    // Create a local results map for this thread
-    std::unordered_map<u_int32_t, list<Hit>> localResults;
+    // Create a vector to store all matches
+    std::vector<std::pair<u_int32_t, SearchHit>> allMatches;
+    allMatches.reserve(endIdx - startIdx); // Reserve space for efficiency
 
     for (unsigned i = startIdx; i < endIdx; ++i)
     {
@@ -128,26 +130,28 @@ std::unordered_map<u_int32_t, list<Hit>> ORBSearcher::processKeyPointBatch(
         for (unsigned j = 0; j < indices.size(); ++j)
         {
             const unsigned i_wordId = indices[j];
+            float distance = dists[j];  // Get the KNN distance
 
             if (index->getWordNbOccurences(i_wordId) > i_maxNbOccurences)
                 continue;
             
-            if (localResults.find(i_wordId) == localResults.end())
-            {
-                // Convert the angle to a 16 bit integer.
-                Hit hit;
-                hit.i_imageId = 0;
-                hit.i_angle = keypoints[i].angle / 360 * (1 << 16);
-                hit.x = keypoints[i].pt.x;
-                hit.y = keypoints[i].pt.y;
-
-                localResults[i_wordId].push_back(hit);
-            }
+            // Convert the angle to a 16 bit integer.
+            Hit hit;
+            hit.i_imageId = 0;
+            hit.i_angle = keypoints[i].angle / 360 * (1 << 16);
+            hit.x = keypoints[i].pt.x;
+            hit.y = keypoints[i].pt.y;
+            
+            // Add this match to our results without filtering
+            SearchHit searchHit;
+            searchHit.hit = hit;
+            searchHit.distance = distance;
+            allMatches.push_back({i_wordId, searchHit});
         }
     }
     
-    // Return the local results
-    return localResults;
+    // Return all matches without filtering
+    return allMatches;
 }
 
 
@@ -202,7 +206,7 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
     size_t batchSize = (totalKeypoints + FEATURE_BATCH_COUNT - 1) / FEATURE_BATCH_COUNT; // Ceiling division
     
     // Create a vector to hold futures for each task
-    std::vector<std::future<std::unordered_map<u_int32_t, list<Hit>>>> futures;
+    std::vector<std::future<std::vector<std::pair<u_int32_t, SearchHit>>>> futures;
     
     // Submit tasks to the thread pool
     for (int b = 0; b < FEATURE_BATCH_COUNT; b++) {
@@ -214,8 +218,8 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
             continue;
         }
                 
-        // Create a packaged task that returns a results map
-        auto task = std::make_shared<std::packaged_task<std::unordered_map<u_int32_t, list<Hit>>()>>(
+        // Create a packaged task that returns a vector of all matches
+        auto task = std::make_shared<std::packaged_task<std::vector<std::pair<u_int32_t, SearchHit>>()>>(
             [this, &descriptors, &keypoints, startIdx, endIdx, b]() {
                 return this->processKeyPointBatch(descriptors, keypoints, startIdx, endIdx, threadWordIndices[b % NUM_THREADS].get());
             }
@@ -228,20 +232,33 @@ u_int32_t ORBSearcher::searchImage(SearchRequest &request)
         boost::asio::post(threadPool, [task]() { (*task)(); });
     }
     
-    // Wait for all tasks to complete and merge their results
+    // Collect all matches from all batches
+    std::vector<std::pair<u_int32_t, SearchHit>> allMatches;
+    
+    // Wait for all tasks to complete and collect their results
+    size_t batchIndex = 0;
+    
     for (auto& future : futures) {
-        auto threadResults = future.get();
-        
-        // Merge thread results into the final results map
-        for (auto& [wordId, hits] : threadResults) {
-            if (imageReqHits.find(wordId) == imageReqHits.end()) {
-                imageReqHits[wordId] = std::move(hits);
-            } else {
-                // If the word already exists, append the hits
-                imageReqHits[wordId].splice(imageReqHits[wordId].end(), std::move(hits));
-            }
-        }
+        auto batchMatches = future.get();        
+        // Add to all matches
+        allMatches.insert(allMatches.end(), batchMatches.begin(), batchMatches.end());
+        batchIndex++;
     }
+    
+    // Now apply consistent filtering in a single pass
+    std::unordered_map<u_int32_t, float> bestDistances;
+    
+    // Group by word ID and keep ALL matches (not just the best one)
+    for (const auto& [wordId, searchHit] : allMatches) {
+        // Add this hit to the list for this word ID
+        imageReqHits[wordId].push_back(searchHit.hit);
+        
+        // Still track best distances for debugging
+        auto distIt = bestDistances.find(wordId);
+        if (distIt == bestDistances.end() || searchHit.distance < distIt->second) {
+            bestDistances[wordId] = searchHit.distance;
+        }
+    }    
     return processSimilar(request, imageReqHits);
 }
 
@@ -353,8 +370,8 @@ u_int32_t ORBSearcher::processSimilar(SearchRequest &request,
         }
     }
     
-    // Find top 300 results using a bounded min-heap (keeps largest elements by replacing smallest)
-    const unsigned TOP_N = 300;
+    // Find top 2000 results using a bounded min-heap (keeps largest elements by replacing smallest)
+    const unsigned TOP_N = 2000;
     std::pair<float, u_int32_t> topResults[TOP_N];
     size_t heapSize = 0;
     

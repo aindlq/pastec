@@ -54,8 +54,11 @@ public:
     // Original constructor
     ORBWordIndex(string visualWordsPath);
     
-    // New constructor that accepts an existing words matrix
+    // Constructor that accepts an existing words matrix (shares the matrix)
     ORBWordIndex(const Mat* sharedWords);
+    
+    // Constructor that creates a deep copy of an existing words matrix
+    ORBWordIndex(const Mat& wordsToCopy);
     
     ~ORBWordIndex();
     

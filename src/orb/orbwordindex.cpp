@@ -48,7 +48,7 @@ ORBWordIndex::ORBWordIndex(string visualWordsPath)
     kdIndex->buildIndex();
 }
 
-// New constructor that accepts an existing words matrix
+// Constructor that accepts an existing words matrix (shares the matrix)
 ORBWordIndex::ORBWordIndex(const Mat* sharedWords)
     : ownsWords(false)
 {
@@ -65,7 +65,29 @@ ORBWordIndex::ORBWordIndex(const Mat* sharedWords)
     
     // Use our custom SimSIMD Hamming distance functor
     kdIndex = new cvflann::HierarchicalClusteringIndex<SimSIMDHamming>
-            (m_features, cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_RANDOM, 8, 100));
+            (m_features, cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_KMEANSPP, 8, 100));
+    kdIndex->buildIndex();
+}
+
+// Constructor that creates a deep copy of an existing words matrix
+ORBWordIndex::ORBWordIndex(const Mat& wordsToCopy)
+    : ownsWords(true)
+{
+    // Create a deep copy of the words matrix
+    words = new Mat();
+    wordsToCopy.copyTo(*words);
+    
+    cout << "Building the word index with deep copy of words." << endl;
+    
+    // Initialize SimSIMD for optimal performance
+    simsimd_flush_denormals();
+    
+    cvflann::Matrix<unsigned char> m_features
+            ((unsigned char*)words->ptr<unsigned char>(0), words->rows, words->cols);
+    
+    // Use our custom SimSIMD Hamming distance functor
+    kdIndex = new cvflann::HierarchicalClusteringIndex<SimSIMDHamming>
+            (m_features, cvflann::HierarchicalClusteringIndexParams(10, cvflann::FLANN_CENTERS_GONZALES, 8, 100));
     kdIndex->buildIndex();
 }
 
@@ -89,7 +111,7 @@ void ORBWordIndex::knnSearch(const Mat& query, vector<int>& indices,
     m_indices.init(indices.data(), dists.data());
 
     kdIndex->findNeighbors(m_indices, (unsigned char*)query.ptr<unsigned char>(0),
-                           cvflann::SearchParams(2000));
+                           cvflann::SearchParams(20000));
 }
 
 

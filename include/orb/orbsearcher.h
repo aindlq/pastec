@@ -44,6 +44,12 @@ using namespace std;
 
 class ClientConnection;
 
+// Structure to hold a hit with its distance during search
+struct SearchHit {
+    Hit hit;           // The original hit data
+    float distance;    // KNN distance (smaller is better)
+};
+
 
 class ORBSearcher : public Searcher
 {
@@ -55,7 +61,7 @@ public:
 
 private:
     // Process a batch of keypoints
-    std::unordered_map<u_int32_t, list<Hit>> processKeyPointBatch(
+    std::vector<std::pair<u_int32_t, SearchHit>> processKeyPointBatch(
         const Mat& descriptors,
         const vector<KeyPoint>& keypoints,
         size_t startIdx,
@@ -77,8 +83,8 @@ private:
 
     // Constants
     static const int NUM_THREADS = 20;          // Increased from 3
-    static const int FEATURE_BATCH_COUNT = 4;   // Number of batches for feature extraction
-    static const int WEIGHT_BATCH_COUNT = 8;    // Number of batches for TF-IDF computation
+    static const int FEATURE_BATCH_COUNT = 8;   // Number of batches for feature extraction
+    static const int WEIGHT_BATCH_COUNT = 4;    // Number of batches for TF-IDF computation
 
     // Original members
     ORBIndex *index;
